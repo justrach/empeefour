@@ -552,21 +552,19 @@ export class VoiceAgent extends EventEmitter {
           return;
         }
         case "health_data_analysis": {
-          const question = String(args.question || "").trim();
-          const window = String(args.window || "last 30d").trim() || "last 30d";
-          if (!question) {
-            this.log("error", "health_data_analysis: empty question");
-            callRecord("skipped", null, "empty question");
-            this.sendToolOutput(call.callId, { ok: false, error: "question required" }, false);
+          const query = String(args.query || "").trim();
+          const metric = strOrUndef(args.metric) ?? "summary";
+          const days = Math.max(1, Math.min(365, numOr(args.days, 7)));
+          if (!query) {
+            this.log("error", "health_data_analysis: empty query");
+            callRecord("skipped", null, "empty query");
+            this.sendToolOutput(call.callId, { ok: false, error: "query required" }, false);
             return;
           }
-          // Parse "last 30d" / "30 days" / "this month" → number of days
-          const dm = window.match(/(\d+)/);
-          const days = dm ? Math.max(1, Math.min(365, Number(dm[1]))) : (window.includes("year") ? 365 : 30);
-          this.log("info", `health analysis: ${question} (${window} → ${days}d)`);
+          this.log("info", `health analysis: ${metric} (${query}, ${days}d)`);
           callRecord("ok", null);
-          this.sendToolOutput(call.callId, { status: "analyzing", question, window }, true);
-          void this.runHealthDataAnalysis(question, "summary", days);
+          this.sendToolOutput(call.callId, { status: "analyzing", query, metric, days }, true);
+          void this.runHealthDataAnalysis(query, metric, days);
           return;
         }
         default:
