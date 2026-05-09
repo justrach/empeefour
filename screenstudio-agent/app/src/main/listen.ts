@@ -190,7 +190,7 @@ export class VoiceAgent extends EventEmitter {
           "-loglevel", "warning",
           "-f", "s16le",
           "-ar", String(REALTIME_AUDIO.sampleRate),
-          "-ac", String(REALTIME_AUDIO.channels),
+          "-ch_layout", "mono",
           "-",
         ],
         {
