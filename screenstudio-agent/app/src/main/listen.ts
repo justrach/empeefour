@@ -53,6 +53,7 @@ export class VoiceAgent extends EventEmitter {
   // while one is active errors with "Conversation already has an active
   // response in progress". So we queue triggers and drain on response.done.
   private responseActive = false;
+  private responseStartedAt = 0;
   private responseTriggerPending = false;
   private session: StudioSession | null = null;
   private runName: string | null = null;
@@ -173,6 +174,7 @@ export class VoiceAgent extends EventEmitter {
     // response can be cut short and we lose the rest of the reply.
     ws.on("response.created", () => {
       this.responseActive = true;
+      this.responseStartedAt = Date.now();
       this.turnTranscript = "";
       this.turnLogged = false;
     });
@@ -183,16 +185,11 @@ export class VoiceAgent extends EventEmitter {
     // ~seconds of PCM into AudioContext for gapless playback — without
     // this flush the model keeps talking from the buffer.
     wsAny.on("input_audio_buffer.speech_started", () => {
+      // Renderer flushes the queued PCM so the speakers stop immediately.
+      // The API's interrupt_response:true setting cancels the active
+      // response on its own; sending response.cancel manually was causing
+      // races (status=cancelled gets confused with our own cancel).
       this.emit("audio-flush");
-      // Also tell the server to fully cancel the active response so it
-      // stops sending more audio.delta events on its side.
-      if (this.responseActive) {
-        try {
-          (this.ws as unknown as { send(e: unknown): void }).send({ type: "response.cancel" });
-        } catch {
-          /* ignore */
-        }
-      }
     });
     ws.on("response.done", (event) => {
       const r = (event as {
@@ -311,6 +308,12 @@ export class VoiceAgent extends EventEmitter {
   // until the next response.done.
   private requestResponseCreate(): void {
     if (!this.ws) return;
+    // Safety net: if responseActive has been stuck true for >15s with no
+    // response.done coming back, force-clear it to unstick the queue.
+    if (this.responseActive && this.responseStartedAt && Date.now() - this.responseStartedAt > 15_000) {
+      this.log("info", "force-clearing stale responseActive");
+      this.responseActive = false;
+    }
     if (this.responseActive) {
       this.responseTriggerPending = true;
       return;
