@@ -264,20 +264,28 @@ export class VoiceAgent extends EventEmitter {
     };
 
     let event: TimelineEvent | null = null;
+    // In edit mode (no live recording), the desktop cursor doesn't map to
+    // anything useful in the video, so default zoom/click to canvas center.
+    // The agent can override via x/y in tool args when known.
+    const editMode = !!this.opts.playheadProvider;
+    function pickXY(): { x: number; y: number } {
+      const ax = numOrUndef(args.x);
+      const ay = numOrUndef(args.y);
+      if (ax !== undefined && ay !== undefined) return { x: ax, y: ay };
+      if (editMode) return { x: 960, y: 540 }; // 1920x1080 canvas center
+      const c = readCursor();
+      return c ?? { x: 960, y: 540 };
+    }
+
     try {
       switch (name) {
         case "mark_zoom": {
-          const cursor = readCursor();
-          if (!cursor) {
-            this.log("error", "mark_zoom: no cursor reading");
-            callRecord("skipped", null, "no cursor");
-            return;
-          }
+          const { x, y } = pickXY();
           event = {
             type: "zoom",
             time: eventTime,
-            x: cursor.x,
-            y: cursor.y,
+            x,
+            y,
             scale: numOr(args.scale, 1.4),
             duration: numOr(args.duration, 1.6),
             lead: 0.25,
@@ -287,17 +295,12 @@ export class VoiceAgent extends EventEmitter {
           break;
         }
         case "mark_click": {
-          const cursor = readCursor();
-          if (!cursor) {
-            this.log("error", "mark_click: no cursor reading");
-            callRecord("skipped", null, "no cursor");
-            return;
-          }
+          const { x, y } = pickXY();
           event = {
             type: "click",
             time: eventTime,
-            x: cursor.x,
-            y: cursor.y,
+            x,
+            y,
             scale: numOr(args.scale, 1.4),
             duration: numOr(args.duration, 1.6),
             lead: 0.25,

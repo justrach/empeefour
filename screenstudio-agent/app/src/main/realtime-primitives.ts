@@ -42,7 +42,7 @@ export const EDITOR_TOOLS = [
     type: "function",
     name: "mark_zoom",
     description:
-      "Zoom in on the user's cursor at a moment in time. Use for 'zoom here' (now) or 'zoom on second N' (specific time).",
+      "Zoom in on a moment in time. Defaults to canvas center; pass x/y in 1920x1080 space if the user names a region.",
     parameters: {
       type: "object",
       properties: {
@@ -50,6 +50,8 @@ export const EDITOR_TOOLS = [
         label: { type: "string", description: "Brief label, e.g. 'settings panel'" },
         scale: { type: "number", description: "1.2-1.8 (default 1.4)" },
         duration: { type: "number", description: "Hold seconds (default 1.6)" },
+        x: { type: "number", description: "Pixel x in 1920x1080 canvas. Omit to use cursor (record mode) or center (edit mode)." },
+        y: { type: "number", description: "Pixel y in 1920x1080 canvas." },
       },
     },
   },
@@ -57,7 +59,7 @@ export const EDITOR_TOOLS = [
     type: "function",
     name: "mark_click",
     description:
-      "Mark a click moment with zoom emphasis at the cursor position. Use for 'click this', 'this click'.",
+      "Mark a click moment with zoom emphasis. Use for 'click this', 'this click'.",
     parameters: {
       type: "object",
       properties: {
@@ -65,6 +67,8 @@ export const EDITOR_TOOLS = [
         label: { type: "string" },
         scale: { type: "number" },
         duration: { type: "number" },
+        x: { type: "number" },
+        y: { type: "number" },
       },
     },
   },
