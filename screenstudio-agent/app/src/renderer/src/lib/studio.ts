@@ -45,6 +45,7 @@ export interface StudioBridge {
   onToolFired(cb: (payload: ToolFiredPayload) => void): () => void
   onTranscriptDelta(cb: (payload: TranscriptDeltaPayload) => void): () => void
   onTranscriptDone(cb: (payload: TranscriptDonePayload) => void): () => void
+  onAudioFlush(cb: () => void): () => void
   onListenLog(cb: (line: string) => void): () => void
   onListenState(cb: (state: VoiceState) => void): () => void
   stats(): Promise<AgentStats>

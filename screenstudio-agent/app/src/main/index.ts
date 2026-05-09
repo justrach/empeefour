@@ -167,6 +167,9 @@ async function setVoiceMode(enabled: boolean): Promise<{ active: boolean }> {
     voice.on('transcript-delta' as never, (payload: { role: 'model' | 'user'; delta: string }) => {
       mainWindow?.webContents.send('voice:transcript-delta', payload)
     })
+    voice.on('audio-flush' as never, () => {
+      mainWindow?.webContents.send('voice:audio-flush')
+    })
     voice.on('transcript-done' as never, (payload: { role: 'model' | 'user' }) => {
       mainWindow?.webContents.send('voice:transcript-done', payload)
     })

@@ -64,6 +64,7 @@ export default function HomePage() {
   const wasMutedBeforeSpace = useRef(false)
   const audioCtxRef = useRef<AudioContext | null>(null)
   const audioNextRef = useRef<number>(0)
+  const audioSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set())
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
   const pendingModelIdRef = useRef<number | null>(null)
 
@@ -179,6 +180,20 @@ export default function HomePage() {
       const startAt = Math.max(ctx.currentTime, audioNextRef.current)
       src.start(startAt)
       audioNextRef.current = startAt + buf.duration
+      audioSourcesRef.current.add(src)
+      src.onended = () => audioSourcesRef.current.delete(src)
+    })
+
+    const offFlush = s.onAudioFlush?.(() => {
+      // VAD detected user speech — cut the model off mid-word by stopping
+      // every queued audio source and resetting the schedule cursor.
+      for (const node of audioSourcesRef.current) {
+        try { node.stop() } catch { /* ignore */ }
+        try { node.disconnect() } catch { /* ignore */ }
+      }
+      audioSourcesRef.current.clear()
+      const ctx = audioCtxRef.current
+      audioNextRef.current = ctx ? ctx.currentTime : 0
     })
 
     const offTool = s.onToolFired?.((p) => {
@@ -234,6 +249,7 @@ export default function HomePage() {
       offTool?.()
       offDelta?.()
       offDone?.()
+      offFlush?.()
       try {
         audioCtxRef.current?.close()
       } catch {

@@ -176,6 +176,24 @@ export class VoiceAgent extends EventEmitter {
       this.turnTranscript = "";
       this.turnLogged = false;
     });
+
+    // Flush queued model audio in the renderer the instant VAD says the
+    // user started talking. The API cancels the active response on its end
+    // (interrupt_response:true) but our renderer has already scheduled
+    // ~seconds of PCM into AudioContext for gapless playback — without
+    // this flush the model keeps talking from the buffer.
+    wsAny.on("input_audio_buffer.speech_started", () => {
+      this.emit("audio-flush");
+      // Also tell the server to fully cancel the active response so it
+      // stops sending more audio.delta events on its side.
+      if (this.responseActive) {
+        try {
+          (this.ws as unknown as { send(e: unknown): void }).send({ type: "response.cancel" });
+        } catch {
+          /* ignore */
+        }
+      }
+    });
     ws.on("response.done", (event) => {
       const r = (event as {
         response?: {

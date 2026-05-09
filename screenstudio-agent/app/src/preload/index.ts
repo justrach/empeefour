@@ -45,6 +45,13 @@ const studio = {
       ipcRenderer.removeListener('voice:transcript-done', handler)
     }
   },
+  onAudioFlush(cb: () => void) {
+    const handler = (): void => cb()
+    ipcRenderer.on('voice:audio-flush', handler)
+    return (): void => {
+      ipcRenderer.removeListener('voice:audio-flush', handler)
+    }
+  },
   onListenLog(cb: (line: string) => void) {
     const handler = (_e: unknown, line: string): void => cb(line)
     ipcRenderer.on('listen:log', handler)
