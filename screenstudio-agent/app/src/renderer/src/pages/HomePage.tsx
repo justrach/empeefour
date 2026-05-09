@@ -19,7 +19,6 @@ interface Balloon {
   emoji: string
   label: string
   detail: string
-  // x offset (px) so balloons don't all stack
   x: number
 }
 
@@ -66,7 +65,6 @@ export default function HomePage() {
   const audioCtxRef = useRef<AudioContext | null>(null)
   const audioNextRef = useRef<number>(0)
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
-  // Track the in-flight pending model bubble id so deltas append + .done finalizes.
   const pendingModelIdRef = useRef<number | null>(null)
 
   useEffect(() => {
@@ -95,9 +93,11 @@ export default function HomePage() {
       setVoiceActive(!!st.active)
       if (!st.active) setVoiceMuted(false)
     })
+
     const offLog = s.onListenLog?.((line) => {
       const text = String(line || '')
-      // Heard = whisper transcription. Show as user bubble.
+
+      // [heard] = user via Whisper -> right-side blue bubble
       if (text.startsWith('[heard]')) {
         const stripped = text.replace(/^\[heard\]\s*/, '').trim()
         if (!stripped) return
@@ -107,7 +107,8 @@ export default function HomePage() {
         ])
         return
       }
-      // Errors as system chips
+
+      // [error] -> centered system chip
       if (text.startsWith('[error]')) {
         const stripped = text.replace(/^\[error\]\s*/, '').trim()
         if (stripped)
@@ -117,7 +118,8 @@ export default function HomePage() {
           ])
         return
       }
-      // marks (+) as system chips
+
+      // marks (+) -> centered system chip
       if (text.startsWith('+')) {
         const stripped = text.slice(1).trim()
         if (stripped)
@@ -125,9 +127,24 @@ export default function HomePage() {
             ...prev.slice(-40),
             { id: ++msgSeq, speaker: 'system', text: stripped, ts: Date.now() }
           ])
+        return
       }
-      // 'model: …' lines are handled by transcript-delta/done streams instead.
+
+      // FALLBACK for `model: …` info lines: streaming transcript-delta events
+      // fill the model bubble in real time. If those didn't fire on this turn
+      // the .done log line still arrives — promote it to a final model bubble
+      // so the model side never goes silent.
+      const mModel = text.match(/^\[info\]\s+model:\s+(.+)$/)
+      if (mModel && pendingModelIdRef.current === null) {
+        const stripped = mModel[1].trim()
+        if (stripped)
+          setChat((prev) => [
+            ...prev.slice(-40),
+            { id: ++msgSeq, speaker: 'model', text: stripped, ts: Date.now() }
+          ])
+      }
     })
+
     const offChunk = s.onAudioChunk?.((b64) => {
       if (!audioCtxRef.current) {
         const Ctor =
@@ -153,6 +170,7 @@ export default function HomePage() {
       src.start(startAt)
       audioNextRef.current = startAt + buf.duration
     })
+
     const offTool = s.onToolFired?.((p) => {
       const look = lookForTool(p.name)
       const id = ++balloonSeq
@@ -169,10 +187,10 @@ export default function HomePage() {
         setBalloons((prev) => prev.filter((x) => x.id !== id))
       }, 2400)
     })
+
     const offDelta = s.onTranscriptDelta?.(({ role, delta }) => {
       if (role !== 'model' || !delta) return
       setChat((prev) => {
-        // Append to the active pending model bubble; create one if none.
         if (pendingModelIdRef.current !== null) {
           return prev.map((m) =>
             m.id === pendingModelIdRef.current ? { ...m, text: m.text + delta } : m
@@ -186,6 +204,7 @@ export default function HomePage() {
         ]
       })
     })
+
     const offDone = s.onTranscriptDone?.(({ role }) => {
       if (role !== 'model') return
       setChat((prev) =>
@@ -197,6 +216,7 @@ export default function HomePage() {
       )
       pendingModelIdRef.current = null
     })
+
     return () => {
       offState()
       offLog?.()
@@ -265,8 +285,6 @@ export default function HomePage() {
     setVoiceActive(!!r.active)
   }
 
-  // Show typing indicator when voice is on, the last message was the user,
-  // and no model message is currently being streamed.
   const lastMsg = chat[chat.length - 1]
   const showTyping =
     voiceActive &&
@@ -364,7 +382,7 @@ export default function HomePage() {
             </h1>
             <p className="mt-3 text-[14px] text-muted">
               {voiceActive
-                ? 'Press M to mute · hold Space to push-to-talk'
+                ? 'Press M to mute · hold Space to push-to-talk · headphones recommended'
                 : 'Try “zoom in here”, “cut from five to eight”, or “search the web for Anthropic news”.'}
             </p>
           </div>
@@ -453,7 +471,6 @@ export default function HomePage() {
             )}
           </div>
 
-          {/* Conversation flow */}
           <div
             className={[
               'w-full max-w-xl overflow-hidden rounded-2xl border border-line bg-white/70 backdrop-blur shadow-sm',
@@ -481,9 +498,7 @@ export default function HomePage() {
               className="flex max-h-[360px] flex-col gap-2 overflow-y-auto px-4 py-4 text-left"
             >
               {chat.length === 0 ? (
-                <p className="py-6 text-center text-[12.5px] text-muted">
-                  Listening…
-                </p>
+                <p className="py-6 text-center text-[12.5px] text-muted">Listening…</p>
               ) : (
                 chat.map((m) => {
                   if (m.speaker === 'user') {
@@ -491,9 +506,7 @@ export default function HomePage() {
                       <div key={m.id} className="msg-user flex justify-end">
                         <div
                           className="max-w-[80%] rounded-2xl rounded-br-md px-3.5 py-2 text-[13.5px] leading-relaxed text-white shadow-sm"
-                          style={{
-                            background: 'linear-gradient(180deg,#3b82f6,#1d4ed8)'
-                          }}
+                          style={{ background: 'linear-gradient(180deg,#3b82f6,#1d4ed8)' }}
                         >
                           {m.text}
                         </div>
@@ -502,12 +515,10 @@ export default function HomePage() {
                   }
                   if (m.speaker === 'model') {
                     return (
-                      <div key={m.id} className="msg-model flex items-start gap-2">
+                      <div key={m.id} className="msg-model flex items-start gap-2 justify-start">
                         <div
                           className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white shadow"
-                          style={{
-                            background: 'linear-gradient(135deg,#a855f7,#ec4899)'
-                          }}
+                          style={{ background: 'linear-gradient(135deg,#a855f7,#ec4899)' }}
                         >
                           A
                         </div>
@@ -525,7 +536,6 @@ export default function HomePage() {
                       </div>
                     )
                   }
-                  // system / mark / error
                   return (
                     <div key={m.id} className="msg-model flex justify-center">
                       <div className="rounded-full border border-line/60 bg-white/60 px-3 py-1 text-[10.5px] font-semibold uppercase tracking-wider text-muted">
@@ -539,9 +549,7 @@ export default function HomePage() {
                 <div className="msg-model flex items-start gap-2">
                   <div
                     className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white shadow"
-                    style={{
-                      background: 'linear-gradient(135deg,#a855f7,#ec4899)'
-                    }}
+                    style={{ background: 'linear-gradient(135deg,#a855f7,#ec4899)' }}
                   >
                     A
                   </div>
