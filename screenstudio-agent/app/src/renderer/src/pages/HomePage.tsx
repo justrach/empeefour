@@ -130,18 +130,28 @@ export default function HomePage() {
         return
       }
 
-      // FALLBACK for `model: …` info lines: streaming transcript-delta events
-      // fill the model bubble in real time. If those didn't fire on this turn
-      // the .done log line still arrives — promote it to a final model bubble
-      // so the model side never goes silent.
-      const mModel = text.match(/^\[info\]\s+model:\s+(.+)$/)
-      if (mModel && pendingModelIdRef.current === null) {
-        const stripped = mModel[1].trim()
-        if (stripped)
-          setChat((prev) => [
+      // The `[info] model: …` log line is the authoritative source for
+      // model bubbles. It fires once per turn at response.done. If a streaming
+      // pending bubble was filled by deltas, replace its text with the final
+      // (cleaned) transcript and finalize. If no streaming happened, create a
+      // fresh bubble. Either way the model side is guaranteed to render.
+      const mModel = text.match(/^\[info\]\s+model:\s+([\s\S]+)$/)
+      if (mModel) {
+        const fullText = mModel[1].trim()
+        if (!fullText) return
+        setChat((prev) => {
+          if (pendingModelIdRef.current !== null) {
+            const id = pendingModelIdRef.current
+            return prev.map((m) =>
+              m.id === id ? { ...m, text: fullText, pending: false } : m
+            )
+          }
+          return [
             ...prev.slice(-40),
-            { id: ++msgSeq, speaker: 'model', text: stripped, ts: Date.now() }
-          ])
+            { id: ++msgSeq, speaker: 'model', text: fullText, ts: Date.now() }
+          ]
+        })
+        pendingModelIdRef.current = null
       }
     })
 

@@ -45,6 +45,9 @@ export class VoiceAgent extends EventEmitter {
   private ws: OpenAIRealtimeWS | null = null;
   private ffmpeg: ReturnType<typeof spawnMacMicPcm> | null = null;
   private muted = false;
+  private modelSpeaking = false;
+  private turnTranscript = "";
+  private turnLogged = false;
   private session: StudioSession | null = null;
   private runName: string | null = null;
   active = false;
@@ -128,18 +131,26 @@ export class VoiceAgent extends EventEmitter {
     });
 
     // Stream model text token-by-token so the renderer can show it flowing
-    // in alongside the audio. The .done event below still fires for the
-    // final cleaned transcript.
+    // in alongside the audio. We also accumulate locally so we can guarantee
+    // a final log line on response.done even if .done's transcript field is
+    // empty (which happens occasionally when interrupted).
     wsAny.on("response.output_audio_transcript.delta", (event) => {
       const delta = String((event as { delta?: string })?.delta || "");
       if (!delta) return;
+      this.turnTranscript += delta;
       this.emit("transcript-delta", { role: "model", delta });
     });
 
-    // Show what the model is saying alongside its audio.
+    // Final transcript for the audio output. Per the GA Realtime API this
+    // fires both on normal completion AND on interruption (with a partial
+    // transcript). Either way we render the model bubble.
     wsAny.on("response.output_audio_transcript.done", (event) => {
       const text = String((event as { transcript?: string })?.transcript || "").trim();
-      if (text) this.log("info", `model: ${text}`);
+      const final = text || this.turnTranscript.trim();
+      if (final) {
+        this.log("info", `model: ${final}`);
+        this.turnLogged = true;
+      }
       this.emit("transcript-done", { role: "model" });
     });
 
@@ -149,11 +160,42 @@ export class VoiceAgent extends EventEmitter {
       const text = String((event as { text?: string }).text || "").trim();
       if (text) this.log("info", `model said (no tool): ${text}`);
     });
+
+    // Track when the model is mid-response so the audio pump knows to drop
+    // mic input. Without this gate, server VAD picks up the model's own voice
+    // bouncing back through the speakers and INTERRUPTS the model — the
+    // response can be cut short and we lose the rest of the reply.
+    ws.on("response.created", () => {
+      this.modelSpeaking = true;
+      this.turnTranscript = "";
+      this.turnLogged = false;
+    });
     ws.on("response.done", (event) => {
-      const r = (event as { response?: { status?: string; status_details?: { error?: { message?: string } } } }).response;
+      const r = (event as {
+        response?: {
+          status?: string;
+          status_details?: { error?: { message?: string }; reason?: string };
+        };
+      }).response;
       if (r?.status === "failed") {
         this.log("error", `response failed: ${r.status_details?.error?.message || "unknown"}`);
       }
+      // Last-chance fallback: if the audio_transcript.done handler didn't
+      // log a model line for this turn (events arrived out of order, or
+      // .done's transcript was empty), but we accumulated deltas, log them
+      // here so the model bubble always appears.
+      if (!this.turnLogged && this.turnTranscript.trim()) {
+        this.log("info", `model: ${this.turnTranscript.trim()}`);
+        this.turnLogged = true;
+        // Make sure a transcript-done fires too so any pending streaming
+        // bubble in the renderer flips out of pending state.
+        this.emit("transcript-done", { role: "model" });
+      }
+      // Grace period to let any tail audio finish playing before we re-open
+      // the mic. Empirically ~400ms is enough for the speakers to stop.
+      setTimeout(() => {
+        this.modelSpeaking = false;
+      }, 400);
     });
 
     ws.on("error", (err) => this.log("error", err.message || String(err)));
@@ -185,7 +227,10 @@ export class VoiceAgent extends EventEmitter {
     const stream = this.ffmpeg.stdout;
     if (!stream) return;
     const chunker = new PcmChunker((chunk) => {
-      if (!this.ws || !this.active || this.muted) return;
+      // Drop mic audio while the model is speaking — without echo cancellation,
+      // the speakers loop the model's own voice back into the mic and Whisper
+      // re-transcribes it as user input.
+      if (!this.ws || !this.active || this.muted || this.modelSpeaking) return;
       try {
         this.ws.send(inputAudioAppendEvent(chunk));
       } catch {
