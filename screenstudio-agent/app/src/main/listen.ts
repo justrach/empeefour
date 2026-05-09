@@ -568,6 +568,21 @@ export class VoiceAgent extends EventEmitter {
           void this.runGenerateImage(prompt, size, quality);
           return;
         }
+        case "compose_video": {
+          const brief = String(args.brief || "").trim();
+          if (!brief) {
+            this.log("error", "compose_video: empty brief");
+            callRecord("skipped", null, "empty brief");
+            this.sendToolOutput(call.callId, { ok: false, error: "brief required" }, false);
+            return;
+          }
+          const project = String(args.project || "cartels-intro");
+          this.log("info", `compose_video: ${brief.slice(0, 80)} (project=${project})`);
+          callRecord("ok", null);
+          this.sendToolOutput(call.callId, { status: "profiling", brief, project }, true);
+          void this.runComposeVideo(brief, project);
+          return;
+        }
         case "health_data_analysis": {
           const query = String(args.query || "").trim();
           const metric = strOrUndef(args.metric) ?? "summary";
@@ -683,6 +698,40 @@ private async runGenerateImage(prompt: string, size: string, quality: string): P
       const msg = err instanceof Error ? err.message : String(err);
       this.log("error", `generate_image failed: ${msg}`);
       this.sendSystemNote(`Image generation failed: ${msg}`);
+    }
+  }
+
+  // Mock video composition runner — pretends an autonomous agent is profiling
+  // the project's footage, then "delivers" a hardcoded result file. Used as a
+  // demo of how a long-running cursor-style agent integrates with the voice
+  // flow. Replace with the real runner when the agentic-video pipeline is
+  // wired up.
+  private async runComposeVideo(brief: string, project: string): Promise<void> {
+    try {
+      const file = `/Users/blackfloofie/empeefour/agentic-video/runs/${project}/final.mp4`;
+      // Simulate the agent doing real work: scanning footage, picking takes,
+      // tightening cuts, applying captions/music. ~6 seconds is enough for the
+      // user to feel like something happened without losing flow.
+      this.log("info", `[edit-runner] profiling ${project}: ${brief.slice(0, 60)}`);
+      await new Promise((res) => setTimeout(res, 6000));
+      if (!fs.existsSync(file)) {
+        this.sendSystemNote(`The video edit agent reported back but the file ${file} isn't where it expected. Tell the user briefly.`);
+        return;
+      }
+      // Open it so the user can see the result immediately.
+      try {
+        spawn("open", [file], { detached: true, stdio: "ignore" }).unref();
+      } catch {
+        /* ignore */
+      }
+      this.log("info", `[edit-runner] done -> ${file}`);
+      this.sendSystemNote(
+        `The video edit agent finished the "${project}" intro and saved it to ${file}. It's open now. Tell the user briefly that the cut is ready and one short sentence about the project.`,
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log("error", `compose_video failed: ${msg}`);
+      this.sendSystemNote(`Video composition failed: ${msg}`);
     }
   }
 

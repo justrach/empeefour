@@ -42,7 +42,8 @@ const TOOL_LOOKS: Record<string, { emoji: string; label: string; tint: string }>
   delegate_to_cursor: { emoji: '🤖', label: 'Cursor', tint: 'from-indigo-500 to-violet-600' },
   web_search: { emoji: '🌐', label: 'Search', tint: 'from-sky-500 to-blue-600' },
   health_data_analysis: { emoji: '❤️‍🔥', label: 'Health', tint: 'from-rose-500 to-orange-500' },
-  generate_image: { emoji: '🎨', label: 'Image', tint: 'from-fuchsia-500 to-rose-500' }
+  generate_image: { emoji: '🎨', label: 'Image', tint: 'from-fuchsia-500 to-rose-500' },
+  compose_video: { emoji: '🎬', label: 'Edit', tint: 'from-amber-500 to-orange-600' }
 }
 
 function lookForTool(name: string): { emoji: string; label: string; tint: string } {
@@ -58,6 +59,7 @@ function shortDetail(name: string, args: Record<string, unknown>): string {
   if (name === 'mark_marker') return String(args.label || '').slice(0, 30)
   if (name === 'health_data_analysis') return String(args.query || '').slice(0, 50)
   if (name === 'generate_image') return String(args.prompt || '').slice(0, 60)
+  if (name === 'compose_video') return String(args.brief || '').slice(0, 60)
   return ''
 }
 
@@ -80,6 +82,8 @@ function metaForTool(name: string, args: Record<string, unknown>): string {
     const days = (args.days as number) ?? 7
     return `${metric} · last ${days}d`
   }
+  if (name === 'generate_image') return `${String(args.size || 'auto')} · ${String(args.quality || 'auto')}`
+  if (name === 'compose_video') return `agent profiling · ${String(args.project || 'cartels-intro')}`
   return ''
 }
 

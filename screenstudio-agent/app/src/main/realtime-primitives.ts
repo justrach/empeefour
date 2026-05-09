@@ -51,6 +51,12 @@ export const EDITOR_SYSTEM_INSTRUCTIONS = [
   "say 'rendering an image…' first. The save path lands as a system note —",
   "mention the save location + a one-sentence description of what you made.",
   "",
+  "When the user asks to MAKE / EDIT / CUT a video (intro, highlight reel,",
+  "trailer, montage, 'a nice intro for X'), fire compose_video with a brief.",
+  "Briefly say 'an agent is profiling it… I'll ping you when it's done' and",
+  "stay quiet until the system note arrives. Don't pretend you're still",
+  "working on it — wait.",
+  "",
   "Never fire mark_cut without both start AND end. Never fire mark_caption with",
   "empty text. Don't fire tools on filler ('uh', 'oh', 'one'), background noise,",
   "or non-English Whisper hallucinations like '谢谢观看' / '请订阅'.",
@@ -169,6 +175,26 @@ export const EDITOR_TOOLS = [
         time: { type: "number", description: "Seconds from start. Omit for 'now'." },
       },
       required: ["label"],
+    },
+  },
+  {
+    type: "function",
+    name: "compose_video",
+    description:
+      "Hand a video editing job to the autonomous video-edit agent (a separate Cursor-style coding agent that has access to the project's footage, captions, and music libraries). Use for things like 'make me a nice intro for the cartel video', 'cut a 30-second highlight reel', 'add captions and a beat to the kickoff clip'. Briefly say 'an agent is profiling it… I'll ping you when it's done' and don't speak again until you receive the system note with the result.",
+    parameters: {
+      type: "object",
+      properties: {
+        brief: {
+          type: "string",
+          description: "Plain-English brief — what the user wants made, mood, length, captions, music, etc.",
+        },
+        project: {
+          type: "string",
+          description: "Optional project slug, e.g. 'cartels-intro'. Defaults based on context.",
+        },
+      },
+      required: ["brief"],
     },
   },
   {
