@@ -22,6 +22,14 @@ const studio = {
       ipcRenderer.removeListener('voice:audio-chunk', handler)
     }
   },
+  onToolFired(cb: (payload: { name: string; args: Record<string, unknown> }) => void) {
+    const handler = (_e: unknown, payload: { name: string; args: Record<string, unknown> }): void =>
+      cb(payload)
+    ipcRenderer.on('voice:tool-fired', handler)
+    return (): void => {
+      ipcRenderer.removeListener('voice:tool-fired', handler)
+    }
+  },
   onListenLog(cb: (line: string) => void) {
     const handler = (_e: unknown, line: string): void => cb(line)
     ipcRenderer.on('listen:log', handler)

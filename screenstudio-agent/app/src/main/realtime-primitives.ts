@@ -42,6 +42,11 @@ export const EDITOR_SYSTEM_INSTRUCTIONS = [
   "For ANYTHING ELSE the user asks (rendering, opening files, installing packages,",
   "answering project questions, multi-step edits) call delegate_to_cursor with a",
   "plain-English task. The user can keep talking while it runs.",
+  "",
+  "If the user asks something that needs FRESH WEB INFO (news, current events,",
+  "looking up a person/product, finding docs/links), call web_search with a concise",
+  "query. Briefly say 'searching the web…' so they know it's underway. The result",
+  "comes back as a system note you can verbalize.",
 ].join("\n");
 
 export const EDITOR_TOOLS = [
@@ -153,6 +158,20 @@ export const EDITOR_TOOLS = [
         time: { type: "number", description: "Seconds from start. Omit for 'now'." },
       },
       required: ["label"],
+    },
+  },
+  {
+    type: "function",
+    name: "web_search",
+    description:
+      "Search the live web via Exa for fresh facts, news, links, docs, or quick lookups. Returns the top result snippets and URLs as a system note. Use for anything that benefits from current info.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Concise search query, 3-12 words." },
+        num_results: { type: "number", description: "How many results (default 4, max 8)." },
+      },
+      required: ["query"],
     },
   },
 ] satisfies RealtimeFunctionTool[];

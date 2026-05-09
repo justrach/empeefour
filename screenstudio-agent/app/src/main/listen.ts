@@ -196,6 +196,9 @@ export class VoiceAgent extends EventEmitter {
   private async handleToolCall(call: RealtimeToolCall): Promise<void> {
     if (!this.session) return;
     const { name, argsRaw, args } = call;
+    // Visual ping for the renderer — every tool fire pops a balloon on the home
+    // screen so the user knows the function call landed before the audio reply.
+    this.emit("tool-fired", { name, args });
 
     // In edit mode (playheadProvider given), "now" = video playhead.
     // In recording mode, "now" = clock - start_epoch.
@@ -354,6 +357,19 @@ export class VoiceAgent extends EventEmitter {
           void this.runCursorTask(task);
           return;
         }
+        case "web_search": {
+          const query = String(args.query || "").trim();
+          if (!query) {
+            this.log("error", "web_search: empty query");
+            callRecord("skipped", null, "empty query");
+            return;
+          }
+          const numResults = Math.min(8, Math.max(1, numOr(args.num_results, 4)));
+          this.log("info", `web search: ${query}`);
+          callRecord("ok", null);
+          void this.runWebSearch(query, numResults);
+          return;
+        }
         default:
           this.log("error", `unknown tool: ${name}`);
           callRecord("error", null, "unknown tool");
@@ -411,6 +427,58 @@ export class VoiceAgent extends EventEmitter {
       const msg = err instanceof Error ? err.message : String(err);
       this.log("error", `cursor failed: ${msg}`);
       this.sendSystemNote(`The coding agent failed: ${msg}`);
+    }
+  }
+
+  private async runWebSearch(query: string, numResults: number): Promise<void> {
+    const apiKey = process.env.EXA_API_KEY || process.env["EXA-API-KEY"];
+    if (!apiKey) {
+      this.log("error", "web_search: EXA_API_KEY not set");
+      this.sendSystemNote("Web search unavailable: EXA_API_KEY missing.");
+      return;
+    }
+    try {
+      const res = await fetch("https://api.exa.ai/search", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": apiKey,
+        },
+        body: JSON.stringify({
+          query,
+          type: "auto",
+          numResults,
+          contents: { highlights: { numSentences: 2, highlightsPerUrl: 1 } },
+        }),
+      });
+      if (!res.ok) {
+        const detail = await res.text().catch(() => "");
+        this.log("error", `exa ${res.status}: ${detail.slice(0, 200)}`);
+        this.sendSystemNote(`Web search failed (${res.status}). Tell the user briefly.`);
+        return;
+      }
+      const data = (await res.json()) as {
+        results?: Array<{ title?: string; url?: string; highlights?: string[] }>;
+      };
+      const items = (data.results || []).slice(0, numResults);
+      if (items.length === 0) {
+        this.sendSystemNote(`No web results for "${query}". Tell the user.`);
+        return;
+      }
+      const summary = items
+        .map((r, i) => {
+          const snippet = (r.highlights?.[0] || "").replace(/\s+/g, " ").trim().slice(0, 220);
+          const title = (r.title || r.url || "result").slice(0, 90);
+          return `${i + 1}. ${title} — ${snippet}`;
+        })
+        .join("\n");
+      const note = `Web search results for "${query}":\n${summary}\n\nSummarize these naturally for the user in 2-4 sentences. Cite the most relevant title.`;
+      this.log("info", `exa: ${items.length} results`);
+      this.sendSystemNote(note);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log("error", `web_search failed: ${msg}`);
+      this.sendSystemNote(`Web search failed: ${msg}`);
     }
   }
 

@@ -21,6 +21,11 @@ export interface EditEntry {
   event_index?: number | null
 }
 
+export interface ToolFiredPayload {
+  name: string
+  args: Record<string, unknown>
+}
+
 export interface StudioBridge {
   toggleVoice(): Promise<VoiceState>
   getVoiceState(): Promise<VoiceState>
@@ -28,6 +33,7 @@ export interface StudioBridge {
   setPlayhead(time: number): Promise<void>
   setMuted(muted: boolean): Promise<{ ok: boolean; muted: boolean }>
   onAudioChunk(cb: (base64Pcm: string) => void): () => void
+  onToolFired(cb: (payload: ToolFiredPayload) => void): () => void
   onListenLog(cb: (line: string) => void): () => void
   onListenState(cb: (state: VoiceState) => void): () => void
   stats(): Promise<AgentStats>
