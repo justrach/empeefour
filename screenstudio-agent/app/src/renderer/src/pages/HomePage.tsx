@@ -11,6 +11,16 @@ interface ChatMsg {
   text: string
   pending?: boolean
   ts: number
+  actions?: ChatAction[]
+}
+
+interface ChatAction {
+  id: number
+  tool: string
+  emoji: string
+  label: string
+  detail: string
+  meta: string
 }
 
 interface Balloon {
@@ -47,6 +57,32 @@ function shortDetail(name: string, args: Record<string, unknown>): string {
   return ''
 }
 
+function metaForTool(name: string, args: Record<string, unknown>): string {
+  if (name === 'mark_zoom') return `${(args.scale as number) ?? 1.4}× · ${(args.duration as number) ?? 1.6}s hold`
+  if (name === 'mark_click') return `click · ${(args.scale as number) ?? 1.4}× zoom`
+  if (name === 'mark_caption') return `${String(args.position || 'bottom')} · ${(args.duration as number) ?? 2}s`
+  if (name === 'mark_speed') {
+    const start = args.start as number | undefined
+    const end = args.end as number | undefined
+    if (start !== undefined && end !== undefined) return `${start}s → ${end}s · ×${(args.factor as number) ?? 2.5}`
+    return `last ${(args.seconds_back as number) ?? 6}s · ×${(args.factor as number) ?? 2.5}`
+  }
+  if (name === 'mark_cut') return 'span removed'
+  if (name === 'mark_marker') return 'timeline marker'
+  if (name === 'web_search') return 'live web · Exa'
+  if (name === 'delegate_to_cursor') return 'composer-2 · async'
+  return ''
+}
+
+function fmtElapsed(ts: number, sessionStart: number): string {
+  if (!sessionStart) return ''
+  const sec = Math.max(0, Math.floor((ts - sessionStart) / 1000))
+  const m = Math.floor(sec / 60).toString().padStart(2, '0')
+  const s = (sec % 60).toString().padStart(2, '0')
+  return `${m}:${s}`
+}
+
+
 function plural(n: number, s: string): string {
   return n === 1 ? `1 ${s}` : `${n} ${s}s`
 }
@@ -62,6 +98,64 @@ const SUGGESTIONS = [
 let msgSeq = 0
 let balloonSeq = 0
 
+function ChatRow({ msg, elapsed }: { msg: ChatMsg; elapsed: string }) {
+  const isUser = msg.speaker === 'user'
+  const isAgent = msg.speaker === 'model'
+  const pillLabel = isUser ? 'You' : isAgent ? 'Agent' : 'System'
+  const pillTone = isAgent || isUser
+    ? 'bg-emerald-50 text-emerald-700'
+    : 'bg-neutral-100 text-neutral-500'
+  const animClass = isUser ? 'msg-user' : 'msg-model'
+  return (
+    <div className={`${animClass} grid grid-cols-[58px_64px_1fr] items-start gap-3 px-1 py-1.5`}>
+      <span className="pt-1 text-right font-mono text-[11px] tabular-nums text-neutral-400">
+        {elapsed}
+      </span>
+      <span className={`inline-flex items-center justify-center rounded-md ${pillTone} px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider`}>
+        {pillLabel}
+      </span>
+      <div className="flex flex-col gap-2">
+        {msg.text && (
+          <div className={`text-[14px] leading-relaxed text-neutral-800 ${msg.pending ? 'pending-glow rounded' : ''}`}>
+            {msg.text}
+            {msg.pending && (
+              <span className="caret-blink ml-0.5 inline-block w-[2px] align-text-bottom h-[14px] bg-emerald-500" />
+            )}
+          </div>
+        )}
+        {msg.actions && msg.actions.length > 0 && (
+          <div className="flex flex-col gap-2">
+            {msg.actions.map((a) => (
+              <ActionCard key={a.id} action={a} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function ActionCard({ action }: { action: ChatAction }) {
+  return (
+    <div className="flex items-center gap-3 rounded-xl border border-neutral-200/80 bg-white px-3 py-2.5 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-[18px]">
+        {action.emoji}
+      </span>
+      <div className="flex-1 min-w-0">
+        <div className="truncate text-[13px] font-semibold text-neutral-900">
+          <span className="text-neutral-500">{action.label}: </span>
+          {action.detail || action.label}
+        </div>
+        {action.meta && (
+          <div className="mt-0.5 truncate text-[11.5px] text-neutral-500">
+            {action.meta}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function HomePage() {
   const [runs, setRuns] = useState<RunSummary[]>([])
   const [voiceActive, setVoiceActive] = useState(false)
@@ -70,6 +164,7 @@ export default function HomePage() {
   const [chat, setChat] = useState<ChatMsg[]>([])
   const [balloons, setBalloons] = useState<Balloon[]>([])
   const [tipIdx, setTipIdx] = useState(0)
+  const sessionStartedAtRef = useRef<number>(0)
   const audioCtxRef = useRef<AudioContext | null>(null)
   const audioNextRef = useRef<number>(0)
   const audioSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set())
@@ -211,6 +306,35 @@ export default function HomePage() {
       window.setTimeout(() => {
         setBalloons((prev) => prev.filter((x) => x.id !== id))
       }, 2400)
+
+      const action: ChatAction = {
+        id,
+        tool: p.name,
+        emoji: look.emoji,
+        label: look.label,
+        detail: shortDetail(p.name, p.args || {}),
+        meta: metaForTool(p.name, p.args || {})
+      }
+      setChat((prev) => {
+        if (pendingModelIdRef.current !== null) {
+          return prev.map((m) =>
+            m.id === pendingModelIdRef.current
+              ? { ...m, actions: [...(m.actions || []), action] }
+              : m
+          )
+        }
+        for (let i = prev.length - 1; i >= 0; i--) {
+          if (prev[i].speaker === 'model') {
+            const next = prev.slice()
+            next[i] = { ...prev[i], actions: [...(prev[i].actions || []), action] }
+            return next
+          }
+        }
+        return [
+          ...prev.slice(-40),
+          { id: ++msgSeq, speaker: 'system', text: '', ts: Date.now(), actions: [action] }
+        ]
+      })
     })
 
     const offDelta = s.onTranscriptDelta?.(({ role, delta }) => {
@@ -326,6 +450,7 @@ export default function HomePage() {
     // PTT-first: when the session starts, default the mic to muted so we
     // only transmit while the user is holding Space (or pressing the orb).
     if (r.active) {
+      sessionStartedAtRef.current = Date.now()
       setVoiceMuted(true)
       await s.setMuted?.(true)
     }
@@ -634,68 +759,27 @@ export default function HomePage() {
                 ref={chatScrollRef}
                 className="flex max-h-[320px] flex-col gap-2 overflow-y-auto px-4 py-4 text-left"
               >
-                {chat.map((m) => {
-                  if (m.speaker === 'user') {
-                    return (
-                      <div key={m.id} className="msg-user flex justify-end">
-                        <div
-                          className="max-w-[80%] rounded-2xl rounded-br-md px-3.5 py-2 text-[13.5px] leading-relaxed text-white shadow-sm"
-                          style={{ background: 'linear-gradient(180deg,#22c55e,#15803d)' }}
-                        >
-                          {m.text}
-                        </div>
-                      </div>
-                    )
-                  }
-                  if (m.speaker === 'model') {
-                    return (
-                      <div key={m.id} className="msg-model flex items-start gap-2 justify-start">
-                        <div
-                          className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white shadow"
-                          style={{ background: 'linear-gradient(135deg,#34d399,#15803d)' }}
-                        >
-                          A
-                        </div>
-                        <div
-                          className={[
-                            'max-w-[85%] rounded-2xl rounded-tl-md border border-neutral-200/70 px-3.5 py-2 text-[13.5px] leading-relaxed text-neutral-900 shadow-sm',
-                            m.pending ? 'bg-white pending-glow' : 'bg-white'
-                          ].join(' ')}
-                        >
-                          {m.text}
-                          {m.pending && (
-                            <span className="caret-blink ml-0.5 inline-block w-[2px] align-text-bottom h-[14px] bg-emerald-500" />
-                          )}
-                        </div>
-                      </div>
-                    )
-                  }
-                  return (
-                    <div key={m.id} className="msg-model flex justify-center">
-                      <div className="rounded-full border border-neutral-200/60 bg-neutral-50 px-3 py-1 text-[10.5px] font-semibold uppercase tracking-wider text-neutral-500">
-                        {m.text}
-                      </div>
-                    </div>
-                  )
-                })}
+                {chat.map((m) => (
+                  <ChatRow
+                    key={m.id}
+                    msg={m}
+                    elapsed={fmtElapsed(m.ts, sessionStartedAtRef.current)}
+                  />
+                ))}
                 {showTyping && (
-                  <div className="msg-model flex items-start gap-2">
-                    <div
-                      className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white shadow"
-                      style={{ background: 'linear-gradient(135deg,#34d399,#15803d)' }}
-                    >
-                      A
-                    </div>
-                    <div className="rounded-2xl rounded-tl-md border border-neutral-200/70 bg-white px-4 py-2.5 shadow-sm">
-                      <div className="flex items-center gap-1.5">
-                        {[0, 1, 2].map((i) => (
-                          <span
-                            key={i}
-                            className="typing-dot inline-block h-1.5 w-1.5 rounded-full bg-neutral-400"
-                            style={{ animationDelay: `${i * 160}ms` }}
-                          />
-                        ))}
-                      </div>
+                  <div className="msg-model grid grid-cols-[58px_64px_1fr] items-start gap-3 px-1 py-1">
+                    <span className="pt-1 text-right font-mono text-[11px] text-neutral-400" />
+                    <span className="inline-flex items-center justify-center rounded-md bg-emerald-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-700">
+                      Agent
+                    </span>
+                    <div className="flex items-center gap-1.5 pt-1">
+                      {[0, 1, 2].map((i) => (
+                        <span
+                          key={i}
+                          className="typing-dot inline-block h-1.5 w-1.5 rounded-full bg-neutral-400"
+                          style={{ animationDelay: `${i * 160}ms` }}
+                        />
+                      ))}
                     </div>
                   </div>
                 )}
