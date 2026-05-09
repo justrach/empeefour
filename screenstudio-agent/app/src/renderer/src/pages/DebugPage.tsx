@@ -95,8 +95,9 @@ export default function DebugPage() {
 
   // Tell main which take voice mode should target.
   useEffect(() => {
-    studio()?.setEditTarget(selected ?? null)
+    studio()?.setEditTarget?.(selected ?? null)
   }, [selected])
+
 
   // Subscribe to voice state + log lines.
   useEffect(() => {
@@ -148,7 +149,7 @@ export default function DebugPage() {
     next.events.sort((a, b) => Number(a.time || 0) - Number(b.time || 0))
     persist(next)
     if (selected) {
-      studio()?.journalEdit({
+      studio()?.journalEdit?.({
         run_name: selected,
         op: 'add',
         payload: event,
@@ -168,7 +169,7 @@ export default function DebugPage() {
     events.sort((a, b) => Number(a.time || 0) - Number(b.time || 0))
     persist({ ...doc, events })
     if (selected) {
-      studio()?.journalEdit({
+      studio()?.journalEdit?.({
         run_name: selected,
         op: 'update',
         payload: cleanPatch,
@@ -183,7 +184,7 @@ export default function DebugPage() {
     const events = doc.events.filter((_, i) => i !== index)
     persist({ ...doc, events })
     if (selected) {
-      studio()?.journalEdit({
+      studio()?.journalEdit?.({
         run_name: selected,
         op: 'delete',
         payload: removed,
@@ -323,7 +324,7 @@ export default function DebugPage() {
                       onTimeUpdate={(e) => {
                         const t = e.currentTarget.currentTime
                         setCurrentTime(t)
-                        studio()?.setPlayhead(t)
+                        studio()?.setPlayhead?.(t)
                       }}
                       onSeeked={(e) => setCurrentTime(e.currentTarget.currentTime)}
                     />
