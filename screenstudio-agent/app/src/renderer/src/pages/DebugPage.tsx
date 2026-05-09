@@ -51,6 +51,7 @@ export default function DebugPage() {
   const [renderStatus, setRenderStatus] = useState('')
   const [voiceActive, setVoiceActive] = useState(false)
   const [voiceLog, setVoiceLog] = useState<string[]>([])
+  const [mediaTick, setMediaTick] = useState(0)
   const videoRef = useRef<HTMLVideoElement | null>(null)
 
   useEffect(() => {
@@ -120,10 +121,13 @@ export default function DebugPage() {
   }
 
   const run = runs.find((r) => r.name === selected)
+  // mediaTick busts the browser cache after a render so the freshly-written
+  // final.mp4 actually displays instead of the stale one at the same URL.
+  const cacheBust = mediaTick ? `?t=${mediaTick}` : ''
   const videoSrc = run?.final
-    ? mediaUrl(run.name, 'final.mp4')
+    ? mediaUrl(run.name, 'final.mp4') + cacheBust
     : run?.raw
-      ? mediaUrl(run.name, 'raw.mov')
+      ? mediaUrl(run.name, 'raw.mov') + cacheBust
       : null
 
   async function persist(next: EventsDoc): Promise<void> {
@@ -200,11 +204,12 @@ export default function DebugPage() {
         background: '#f3f0ea'
       })
       setRenderStatus(`Done: ${result.output.split('/').pop()}`)
-      // Refresh runs list so the "rendered" badge appears + reload video.
+      // Refresh runs list so the "rendered" badge appears + bust media cache
+      // so the <video> picks up the freshly-written final.mp4 instead of the
+      // stale one cached at the same URL.
       const r = await listRuns()
       setRuns(r.runs || [])
-      const v = videoRef.current
-      if (v) v.load()
+      setMediaTick(Date.now())
     } catch (e) {
       setRenderStatus(`Failed: ${e instanceof Error ? e.message : String(e)}`)
     } finally {

@@ -71,6 +71,7 @@ mic → ffmpeg (avfoundation, 24 kHz s16le, 100 ms chunks)
      → OpenAIRealtimeWS (gpt-realtime-2)
      → tool call: mark_zoom | mark_click | mark_caption
                   | mark_speed | mark_cut | mark_marker
+     → parseRealtimeToolCall (realtime-primitives.ts)
      → VoiceAgent.handleToolCall (listen.ts)
         ├─ resolves "now" → time-since-start_epoch  (or "here" → cursor via Quartz)
         ├─ db.recordToolCall + db.bumpSuggestion     (memory)
@@ -78,7 +79,7 @@ mic → ffmpeg (avfoundation, 24 kHz s16le, 100 ms chunks)
      → editor UI polls /api/runs/<name>/events     (UI updates live)
 ```
 
-Key design choice: the model emits **structured tool calls**, never free-form text. System prompt in `listen.ts:21` is deliberately aggressive — questions like "can we zoom in?" count as commands. False positives are cheap (you delete an event); missed marks ruin the take.
+Key design choice: the model emits **structured tool calls**, never free-form text. The local Realtime primitives in `app/src/main/realtime-primitives.ts` own the session payload, tool schemas, PCM chunking, and tool-call parsing; `VoiceAgent` stays focused on lifecycle and timeline effects. The system prompt is deliberately aggressive — questions like "can we zoom in?" count as commands. False positives are cheap (you delete an event); missed marks ruin the take.
 
 Time resolution rule: every mark tool accepts an optional `time` (seconds from start). Omitted means "now." `mark_cut` requires `start` + `end` because there's no sensible "now" for a range.
 
