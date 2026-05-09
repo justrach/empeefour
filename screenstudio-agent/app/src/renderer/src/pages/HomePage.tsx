@@ -51,6 +51,14 @@ function plural(n: number, s: string): string {
   return n === 1 ? `1 ${s}` : `${n} ${s}s`
 }
 
+const SUGGESTIONS = [
+  'Make a 45-second highlight clip with captions and upbeat music',
+  'Zoom in here and add a caption that says "open settings"',
+  'Cut from second 5 to second 8 and speed up the next 10 seconds',
+  'Search the web for the latest ScreenStudio release notes',
+  'Render the smoke take and tell me how long it took'
+]
+
 let msgSeq = 0
 let balloonSeq = 0
 
@@ -61,12 +69,19 @@ export default function HomePage() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [chat, setChat] = useState<ChatMsg[]>([])
   const [balloons, setBalloons] = useState<Balloon[]>([])
+  const [tipIdx, setTipIdx] = useState(0)
   const wasMutedBeforeSpace = useRef(false)
   const audioCtxRef = useRef<AudioContext | null>(null)
   const audioNextRef = useRef<number>(0)
   const audioSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set())
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
   const pendingModelIdRef = useRef<number | null>(null)
+
+  // Rotate suggestion every 6s while idle / listening with no chat yet.
+  useEffect(() => {
+    const t = setInterval(() => setTipIdx((i) => (i + 1) % SUGGESTIONS.length), 6000)
+    return () => clearInterval(t)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -97,8 +112,6 @@ export default function HomePage() {
 
     const offLog = s.onListenLog?.((line) => {
       const text = String(line || '')
-
-      // [heard] = user via Whisper -> right-side blue bubble
       if (text.startsWith('[heard]')) {
         const stripped = text.replace(/^\[heard\]\s*/, '').trim()
         if (!stripped) return
@@ -108,8 +121,6 @@ export default function HomePage() {
         ])
         return
       }
-
-      // [error] -> centered system chip
       if (text.startsWith('[error]')) {
         const stripped = text.replace(/^\[error\]\s*/, '').trim()
         if (stripped)
@@ -119,8 +130,6 @@ export default function HomePage() {
           ])
         return
       }
-
-      // marks (+) -> centered system chip
       if (text.startsWith('+')) {
         const stripped = text.slice(1).trim()
         if (stripped)
@@ -130,12 +139,6 @@ export default function HomePage() {
           ])
         return
       }
-
-      // The `[info] model: …` log line is the authoritative source for
-      // model bubbles. It fires once per turn at response.done. If a streaming
-      // pending bubble was filled by deltas, replace its text with the final
-      // (cleaned) transcript and finalize. If no streaming happened, create a
-      // fresh bubble. Either way the model side is guaranteed to render.
       const mModel = text.match(/^\[info\]\s+model:\s+([\s\S]+)$/)
       if (mModel) {
         const fullText = mModel[1].trim()
@@ -185,8 +188,6 @@ export default function HomePage() {
     })
 
     const offFlush = s.onAudioFlush?.(() => {
-      // VAD detected user speech — cut the model off mid-word by stopping
-      // every queued audio source and resetting the schedule cursor.
       for (const node of audioSourcesRef.current) {
         try { node.stop() } catch { /* ignore */ }
         try { node.disconnect() } catch { /* ignore */ }
@@ -246,10 +247,10 @@ export default function HomePage() {
       offState()
       offLog?.()
       offChunk?.()
+      offFlush?.()
       offTool?.()
       offDelta?.()
       offDone?.()
-      offFlush?.()
       try {
         audioCtxRef.current?.close()
       } catch {
@@ -318,8 +319,13 @@ export default function HomePage() {
     lastMsg.speaker === 'user' &&
     pendingModelIdRef.current === null
 
+  const headline = voiceActive ? 'Listening' : 'Ready'
+  const subline = voiceActive
+    ? "Speak naturally · I'll edit your video"
+    : 'Tap the mic to start'
+
   return (
-    <div className="relative flex min-h-screen flex-col overflow-hidden bg-soft">
+    <div className="relative flex min-h-screen flex-col overflow-hidden bg-[#f5f6f7]">
       <style>{`
         @keyframes balloonRise {
           0% { transform: translate(-50%, 30px) scale(0.6); opacity: 0; filter: blur(8px); }
@@ -335,11 +341,15 @@ export default function HomePage() {
           0% { transform: translate(-6px, 10px) scale(0.96); opacity: 0; filter: blur(4px); }
           100% { transform: translate(0,0) scale(1); opacity: 1; filter: blur(0); }
         }
-        @keyframes orbBreath {
-          0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239,68,68,0.55), 0 14px 40px -12px rgba(239,68,68,0.55); }
-          50% { transform: scale(1.05); box-shadow: 0 0 0 14px rgba(239,68,68,0), 0 14px 40px -8px rgba(239,68,68,0.7); }
+        @keyframes ripple {
+          0% { transform: translate(-50%,-50%) scale(0.7); opacity: 0.55; }
+          80% { opacity: 0; }
+          100% { transform: translate(-50%,-50%) scale(1.7); opacity: 0; }
         }
-        @keyframes ringSpin { to { transform: rotate(360deg); } }
+        @keyframes pulseDot {
+          0%, 100% { opacity: 1; transform: scale(1); }
+          50% { opacity: 0.6; transform: scale(1.3); }
+        }
         @keyframes drawerSlide {
           0% { transform: translateX(-100%); opacity: 0; }
           100% { transform: translateX(0); opacity: 1; }
@@ -353,68 +363,91 @@ export default function HomePage() {
           0%, 50% { opacity: 1; }
           51%, 100% { opacity: 0; }
         }
+        @keyframes wave1 { 0%,100% { height: 6px; } 50% { height: 14px; } }
+        @keyframes wave2 { 0%,100% { height: 10px; } 50% { height: 4px; } }
+        @keyframes wave3 { 0%,100% { height: 4px; } 50% { height: 12px; } }
         @keyframes shimmer {
           0% { background-position: -200% 0; }
           100% { background-position: 200% 0; }
         }
+        @keyframes fadeUp {
+          0% { opacity: 0; transform: translateY(8px); }
+          100% { opacity: 1; transform: translateY(0); }
+        }
         .balloon { animation: balloonRise 2.4s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
         .msg-user { animation: msgInUser 380ms cubic-bezier(0.22, 1, 0.36, 1) both; }
         .msg-model { animation: msgInModel 380ms cubic-bezier(0.22, 1, 0.36, 1) both; }
-        .orb-active { animation: orbBreath 1.6s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
-        .ring-spin { animation: ringSpin 6s linear infinite; }
+        .ripple-1 { animation: ripple 2.2s cubic-bezier(0.22, 1, 0.36, 1) infinite; animation-delay: 0s; }
+        .ripple-2 { animation: ripple 2.2s cubic-bezier(0.22, 1, 0.36, 1) infinite; animation-delay: 0.55s; }
+        .ripple-3 { animation: ripple 2.2s cubic-bezier(0.22, 1, 0.36, 1) infinite; animation-delay: 1.1s; }
+        .pulse-dot { animation: pulseDot 1.6s ease-in-out infinite; }
         .drawer-in { animation: drawerSlide 360ms cubic-bezier(0.22, 1, 0.36, 1) both; }
         .scrim-in { animation: scrim 240ms ease-out both; }
         .typing-dot { animation: typingDot 1.2s ease-in-out infinite; }
         .caret-blink { animation: caretBlink 1s step-start infinite; }
+        .wave-bar-1 { animation: wave1 0.9s ease-in-out infinite; }
+        .wave-bar-2 { animation: wave2 0.9s ease-in-out infinite; animation-delay: 0.15s; }
+        .wave-bar-3 { animation: wave3 0.9s ease-in-out infinite; animation-delay: 0.3s; }
         .pending-glow {
-          background-image: linear-gradient(110deg, rgba(255,255,255,0) 30%, rgba(99,102,241,0.08) 50%, rgba(255,255,255,0) 70%);
+          background-image: linear-gradient(110deg, rgba(255,255,255,0) 30%, rgba(34,197,94,0.10) 50%, rgba(255,255,255,0) 70%);
           background-size: 200% 100%;
           animation: shimmer 3s ease-in-out infinite;
         }
+        .fade-up { animation: fadeUp 360ms cubic-bezier(0.22, 1, 0.36, 1) both; }
         .ease-spring { transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1); }
       `}</style>
 
-      <header className="z-10 flex items-center justify-between border-b border-line bg-white/80 backdrop-blur px-6 py-3">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => setDrawerOpen(true)}
-            aria-label="Open takes"
-            className="flex h-9 w-9 items-center justify-center rounded-md transition-all duration-200 ease-spring hover:bg-soft hover:scale-105 active:scale-95"
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-              <line x1="4" y1="7" x2="20" y2="7" />
-              <line x1="4" y1="12" x2="20" y2="12" />
-              <line x1="4" y1="17" x2="20" y2="17" />
+      {/* Top bar */}
+      <header className="z-10 flex items-center justify-between px-6 py-5">
+        <button
+          onClick={() => setDrawerOpen(true)}
+          className="group flex items-center gap-2.5 rounded-xl border border-neutral-200/80 bg-white/90 px-3 py-2 text-[13px] font-semibold text-neutral-800 shadow-sm transition-all duration-200 ease-spring hover:-translate-y-0.5 hover:shadow-md active:scale-[0.98]"
+        >
+          <span className="flex h-7 w-7 items-center justify-center rounded-md bg-emerald-100">
+            {/* Clapperboard icon */}
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#16a34a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4 8h16v12H4z" />
+              <path d="M4 8l2-4h3l-2 4" />
+              <path d="M9 8l2-4h3l-2 4" />
+              <path d="M14 8l2-4h3l-2 4" />
             </svg>
-          </button>
-          <div className="flex items-center gap-2.5 text-[15px] font-bold tracking-tight">
-            <span className="h-6 w-6 rounded-md bg-gradient-to-br from-blue to-green shadow" />
-            Studio Agent
-          </div>
-        </div>
+          </span>
+          <span className="text-neutral-700">Project:</span>
+          <span className="font-bold text-neutral-900">
+            {runs[0]?.name?.replace(/^take-/, '') || 'New session'}
+          </span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" className="text-neutral-500 transition-transform duration-200 group-hover:translate-y-0.5">
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </button>
+
         <Link
           to="/debug"
-          className="rounded-md px-3 py-1.5 text-[13px] font-semibold text-muted transition-all duration-200 ease-spring hover:bg-soft hover:text-ink hover:translate-x-0.5"
+          className="flex h-10 w-10 items-center justify-center rounded-xl border border-neutral-200/80 bg-white/90 text-neutral-700 shadow-sm transition-all duration-200 ease-spring hover:-translate-y-0.5 hover:rotate-45 hover:text-neutral-900 hover:shadow-md"
+          title="Advanced editor"
         >
-          Advanced editor →
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
         </Link>
       </header>
 
-      <main className="relative flex flex-1 flex-col items-center justify-start px-6 pt-10 pb-10">
-        <div className="flex w-full max-w-2xl flex-col items-center gap-8 text-center">
-          <div>
-            <h1 className="mx-auto max-w-xl text-[36px] font-bold leading-[1.1] tracking-tight">
-              {voiceActive ? 'Listening.' : 'Talk and the agent edits your demo.'}
+      <main className="relative flex flex-1 flex-col items-center px-6 pt-8 pb-16">
+        <div className="flex w-full max-w-[640px] flex-col items-center gap-12 text-center">
+          {/* Hero */}
+          <div className="fade-up">
+            <h1 className="text-[68px] font-bold leading-[1.0] tracking-[-0.04em] text-neutral-900">
+              {headline}
+              <span className={`text-emerald-500 ${voiceActive ? 'pulse-dot inline-block' : ''}`}>.</span>
             </h1>
-            <p className="mt-3 text-[14px] text-muted">
-              {voiceActive
-                ? 'Press M to mute · hold Space to push-to-talk · headphones recommended'
-                : 'Try “zoom in here”, “cut from five to eight”, or “search the web for Anthropic news”.'}
-            </p>
+            <p className="mt-4 text-[15px] text-neutral-500">{subline}</p>
           </div>
 
-          <div className="relative flex flex-col items-center gap-4">
-            <div className="pointer-events-none absolute -top-4 left-1/2 z-20 h-1 w-1">
+          {/* Mic + ripples */}
+          <div className="relative flex flex-col items-center gap-7">
+            {/* Tool balloons float up from above the mic */}
+            <div className="pointer-events-none absolute -top-6 left-1/2 z-30 h-1 w-1">
               {balloons.map((b) => (
                 <div
                   key={b.id}
@@ -441,98 +474,149 @@ export default function HomePage() {
               ))}
             </div>
 
+            {/* Ripple container */}
+            <div className="relative flex items-center justify-center" style={{ width: 280, height: 280 }}>
+              {voiceActive && !voiceMuted && (
+                <>
+                  <span
+                    className="ripple-1 absolute left-1/2 top-1/2 h-[180px] w-[180px] rounded-full"
+                    style={{ background: 'radial-gradient(circle, rgba(34,197,94,0.18) 30%, rgba(34,197,94,0) 70%)' }}
+                  />
+                  <span
+                    className="ripple-2 absolute left-1/2 top-1/2 h-[180px] w-[180px] rounded-full"
+                    style={{ background: 'radial-gradient(circle, rgba(34,197,94,0.14) 30%, rgba(34,197,94,0) 70%)' }}
+                  />
+                  <span
+                    className="ripple-3 absolute left-1/2 top-1/2 h-[180px] w-[180px] rounded-full"
+                    style={{ background: 'radial-gradient(circle, rgba(34,197,94,0.10) 30%, rgba(34,197,94,0) 70%)' }}
+                  />
+                </>
+              )}
+
+              {/* The mic button */}
+              <button
+                onClick={handleVoice}
+                disabled={!studio()}
+                className={[
+                  'relative inline-flex h-[136px] w-[136px] items-center justify-center rounded-full text-white shadow-2xl',
+                  'transition-all duration-300 ease-spring',
+                  'hover:-translate-y-1 hover:scale-[1.02] active:scale-[0.97]',
+                  'disabled:cursor-not-allowed disabled:opacity-50'
+                ].join(' ')}
+                style={{
+                  background: voiceActive && !voiceMuted
+                    ? 'radial-gradient(circle at 35% 25%, #34d399 0%, #16a34a 55%, #15803d 100%)'
+                    : voiceMuted
+                      ? 'radial-gradient(circle at 35% 25%, #fbbf24 0%, #d97706 55%, #b45309 100%)'
+                      : 'radial-gradient(circle at 35% 25%, #d4d4d8 0%, #71717a 55%, #52525b 100%)',
+                  boxShadow: voiceActive && !voiceMuted
+                    ? '0 18px 50px -12px rgba(34,197,94,0.55), inset 0 -10px 20px rgba(0,0,0,0.15)'
+                    : '0 12px 32px -10px rgba(0,0,0,0.35), inset 0 -10px 20px rgba(0,0,0,0.15)'
+                }}
+                title={voiceActive ? 'Stop' : 'Start voice mode'}
+                aria-label={voiceActive ? 'Stop voice mode' : 'Start voice mode'}
+              >
+                {/* Mic icon (or muted slash) */}
+                {voiceMuted ? (
+                  <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="1" y1="1" x2="23" y2="23" />
+                    <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
+                    <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23" />
+                    <line x1="12" y1="19" x2="12" y2="23" />
+                  </svg>
+                ) : (
+                  <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="9" y="2" width="6" height="13" rx="3" />
+                    <path d="M5 11a7 7 0 0 0 14 0" />
+                    <line x1="12" y1="19" x2="12" y2="23" />
+                  </svg>
+                )}
+              </button>
+            </div>
+
+            {/* Status pill */}
             <button
-              onClick={handleVoice}
+              onClick={() => voiceActive ? setMicMuted(!voiceMuted) : handleVoice()}
               disabled={!studio()}
               className={[
-                'relative inline-flex h-24 w-24 items-center justify-center rounded-full text-white text-2xl shadow-2xl',
-                'transition-all duration-300 ease-spring',
-                voiceActive ? 'orb-active' : 'hover:-translate-y-1 hover:scale-105 active:scale-95',
+                'inline-flex items-center gap-2 rounded-full border px-4 py-2 text-[13px] font-semibold',
+                'transition-all duration-200 ease-spring active:scale-95',
+                voiceActive && !voiceMuted
+                  ? 'border-emerald-300 bg-white text-emerald-600 hover:border-emerald-400'
+                  : voiceMuted
+                    ? 'border-amber-300 bg-white text-amber-600 hover:border-amber-400'
+                    : 'border-neutral-300 bg-white text-neutral-600 hover:border-neutral-400',
                 'disabled:cursor-not-allowed disabled:opacity-50'
               ].join(' ')}
-              style={{
-                background: voiceActive
-                  ? 'linear-gradient(180deg,#ef4444,#991b1b)'
-                  : 'linear-gradient(180deg,#2864c7,#1d51a8)'
-              }}
-              title={voiceActive ? 'Stop' : 'Start voice mode'}
             >
-              {voiceActive && (
-                <span
-                  className="ring-spin absolute inset-[-6px] rounded-full opacity-70"
-                  style={{
-                    background:
-                      'conic-gradient(from 0deg, rgba(255,255,255,0) 0deg, rgba(255,255,255,0.6) 80deg, rgba(255,255,255,0) 160deg)',
-                    WebkitMask: 'radial-gradient(circle, transparent 56%, black 57%)',
-                    mask: 'radial-gradient(circle, transparent 56%, black 57%)'
-                  }}
-                />
-              )}
-              <span className="relative z-10">●</span>
-            </button>
-
-            <div className="flex items-center gap-2 text-[12px] font-semibold text-muted transition-all duration-300 ease-spring">
-              {voiceActive ? (
-                <button
-                  onClick={() => setMicMuted(!voiceMuted)}
-                  className={[
-                    'inline-flex h-7 items-center gap-1 rounded-full px-3 text-[11px] font-bold text-white',
-                    'transition-all duration-200 ease-spring active:scale-95',
-                    voiceMuted ? 'bg-amber-500 hover:bg-amber-400' : 'bg-green hover:opacity-90'
-                  ].join(' ')}
-                >
-                  <span className={voiceMuted ? '' : 'animate-pulse'}>
-                    {voiceMuted ? '🔇' : '🎙'}
-                  </span>
-                  {voiceMuted ? 'Muted' : 'Listening'}
-                </button>
+              {/* Wave-form icon */}
+              {voiceActive && !voiceMuted ? (
+                <span className="flex items-end gap-[2px] h-4">
+                  <span className="wave-bar-1 inline-block w-[3px] rounded-sm bg-emerald-500" />
+                  <span className="wave-bar-2 inline-block w-[3px] rounded-sm bg-emerald-500" />
+                  <span className="wave-bar-3 inline-block w-[3px] rounded-sm bg-emerald-500" />
+                  <span className="wave-bar-1 inline-block w-[3px] rounded-sm bg-emerald-500" />
+                </span>
+              ) : voiceMuted ? (
+                <span className="text-[15px]">🔇</span>
               ) : (
-                <span>Click the orb to start</span>
+                <span className="flex h-2 w-2 rounded-full bg-neutral-400" />
               )}
-            </div>
-            {!studio() && (
-              <p className="text-[12px] text-amber">
-                Voice mode runs in the desktop app — open Studio Agent to use it.
-              </p>
-            )}
+              {voiceActive ? (voiceMuted ? 'Muted · tap to unmute' : 'Listening') : 'Tap to start'}
+            </button>
           </div>
 
-          <div
-            className={[
-              'w-full max-w-xl overflow-hidden rounded-2xl border border-line bg-white/70 backdrop-blur shadow-sm',
-              'transition-all duration-500 ease-spring',
-              voiceActive || chat.length > 0
-                ? 'opacity-100 translate-y-0 max-h-[440px]'
-                : 'opacity-0 translate-y-4 max-h-0 border-transparent'
-            ].join(' ')}
-          >
-            <div className="flex items-baseline justify-between border-b border-line/60 px-4 pt-3 pb-2">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-muted">
-                Conversation
+          {/* Suggestion / conversation */}
+          {chat.length === 0 && !showTyping ? (
+            <button
+              onClick={() => setTipIdx((i) => (i + 1) % SUGGESTIONS.length)}
+              className="fade-up group flex w-full max-w-xl items-center justify-between gap-4 rounded-2xl border border-neutral-200/80 bg-white px-5 py-4 text-left shadow-sm transition-all duration-300 ease-spring hover:-translate-y-0.5 hover:shadow-md"
+            >
+              <div className="flex items-center gap-3">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-500">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 2l1.5 5L18 8l-4 3 1.4 5L12 13.5 8.6 16 10 11l-4-3 4.5-1z" />
+                  </svg>
+                </span>
+                <div>
+                  <div className="text-[12px] font-bold uppercase tracking-wider text-neutral-500">
+                    Try saying something like:
+                  </div>
+                  <div key={tipIdx} className="fade-up mt-1 text-[14px] font-medium text-neutral-800">
+                    “{SUGGESTIONS[tipIdx]}”
+                  </div>
+                </div>
+              </div>
+              <span className="text-neutral-400 transition-transform duration-200 group-hover:translate-x-0.5">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="9 18 15 12 9 6" />
+                </svg>
               </span>
-              {chat.length > 0 && (
+            </button>
+          ) : (
+            <div className="w-full max-w-xl overflow-hidden rounded-2xl border border-neutral-200/80 bg-white shadow-sm fade-up">
+              <div className="flex items-baseline justify-between border-b border-neutral-100 px-5 pt-3 pb-2">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-400">
+                  Conversation
+                </span>
                 <button
                   onClick={() => setChat([])}
-                  className="text-[11px] text-muted transition hover:text-ink"
+                  className="text-[11px] text-neutral-500 transition hover:text-neutral-800"
                 >
                   Clear
                 </button>
-              )}
-            </div>
-            <div
-              ref={chatScrollRef}
-              className="flex max-h-[360px] flex-col gap-2 overflow-y-auto px-4 py-4 text-left"
-            >
-              {chat.length === 0 ? (
-                <p className="py-6 text-center text-[12.5px] text-muted">Listening…</p>
-              ) : (
-                chat.map((m) => {
+              </div>
+              <div
+                ref={chatScrollRef}
+                className="flex max-h-[320px] flex-col gap-2 overflow-y-auto px-4 py-4 text-left"
+              >
+                {chat.map((m) => {
                   if (m.speaker === 'user') {
                     return (
                       <div key={m.id} className="msg-user flex justify-end">
                         <div
                           className="max-w-[80%] rounded-2xl rounded-br-md px-3.5 py-2 text-[13.5px] leading-relaxed text-white shadow-sm"
-                          style={{ background: 'linear-gradient(180deg,#3b82f6,#1d4ed8)' }}
+                          style={{ background: 'linear-gradient(180deg,#22c55e,#15803d)' }}
                         >
                           {m.text}
                         </div>
@@ -544,19 +628,19 @@ export default function HomePage() {
                       <div key={m.id} className="msg-model flex items-start gap-2 justify-start">
                         <div
                           className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white shadow"
-                          style={{ background: 'linear-gradient(135deg,#a855f7,#ec4899)' }}
+                          style={{ background: 'linear-gradient(135deg,#34d399,#15803d)' }}
                         >
                           A
                         </div>
                         <div
                           className={[
-                            'max-w-[85%] rounded-2xl rounded-tl-md border border-line/70 px-3.5 py-2 text-[13.5px] leading-relaxed text-ink shadow-sm',
+                            'max-w-[85%] rounded-2xl rounded-tl-md border border-neutral-200/70 px-3.5 py-2 text-[13.5px] leading-relaxed text-neutral-900 shadow-sm',
                             m.pending ? 'bg-white pending-glow' : 'bg-white'
                           ].join(' ')}
                         >
                           {m.text}
                           {m.pending && (
-                            <span className="caret-blink ml-0.5 inline-block w-[2px] align-text-bottom h-[14px] bg-indigo-500" />
+                            <span className="caret-blink ml-0.5 inline-block w-[2px] align-text-bottom h-[14px] bg-emerald-500" />
                           )}
                         </div>
                       </div>
@@ -564,39 +648,51 @@ export default function HomePage() {
                   }
                   return (
                     <div key={m.id} className="msg-model flex justify-center">
-                      <div className="rounded-full border border-line/60 bg-white/60 px-3 py-1 text-[10.5px] font-semibold uppercase tracking-wider text-muted">
+                      <div className="rounded-full border border-neutral-200/60 bg-neutral-50 px-3 py-1 text-[10.5px] font-semibold uppercase tracking-wider text-neutral-500">
                         {m.text}
                       </div>
                     </div>
                   )
-                })
-              )}
-              {showTyping && (
-                <div className="msg-model flex items-start gap-2">
-                  <div
-                    className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white shadow"
-                    style={{ background: 'linear-gradient(135deg,#a855f7,#ec4899)' }}
-                  >
-                    A
-                  </div>
-                  <div className="rounded-2xl rounded-tl-md border border-line/70 bg-white px-4 py-2.5 shadow-sm">
-                    <div className="flex items-center gap-1.5">
-                      {[0, 1, 2].map((i) => (
-                        <span
-                          key={i}
-                          className="typing-dot inline-block h-1.5 w-1.5 rounded-full bg-neutral-400"
-                          style={{ animationDelay: `${i * 160}ms` }}
-                        />
-                      ))}
+                })}
+                {showTyping && (
+                  <div className="msg-model flex items-start gap-2">
+                    <div
+                      className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white shadow"
+                      style={{ background: 'linear-gradient(135deg,#34d399,#15803d)' }}
+                    >
+                      A
+                    </div>
+                    <div className="rounded-2xl rounded-tl-md border border-neutral-200/70 bg-white px-4 py-2.5 shadow-sm">
+                      <div className="flex items-center gap-1.5">
+                        {[0, 1, 2].map((i) => (
+                          <span
+                            key={i}
+                            className="typing-dot inline-block h-1.5 w-1.5 rounded-full bg-neutral-400"
+                            style={{ animationDelay: `${i * 160}ms` }}
+                          />
+                        ))}
+                      </div>
                     </div>
                   </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
-          </div>
+          )}
+
+          {voiceActive && (
+            <p className="text-[11.5px] text-neutral-400">
+              Press <kbd className="rounded border border-neutral-300 bg-white px-1.5 py-0.5 text-[10px] font-bold text-neutral-600">M</kbd> to mute · hold <kbd className="rounded border border-neutral-300 bg-white px-1.5 py-0.5 text-[10px] font-bold text-neutral-600">Space</kbd> for push-to-talk
+            </p>
+          )}
+          {!studio() && (
+            <p className="text-[12px] text-amber-600">
+              Voice mode runs in the desktop app — open Studio Agent to use it.
+            </p>
+          )}
         </div>
       </main>
 
+      {/* Drawer */}
       {drawerOpen && (
         <div
           className="scrim-in fixed inset-0 z-40 bg-black/40 backdrop-blur-sm"
@@ -606,32 +702,32 @@ export default function HomePage() {
       )}
       <aside
         className={[
-          'fixed inset-y-0 left-0 z-50 w-[320px] border-r border-line bg-white shadow-2xl',
+          'fixed inset-y-0 left-0 z-50 w-[340px] border-r border-neutral-200 bg-white shadow-2xl',
           'transition-transform duration-300 ease-spring',
           drawerOpen ? 'translate-x-0 drawer-in' : '-translate-x-full'
         ].join(' ')}
       >
-        <div className="flex items-center justify-between border-b border-line px-4 py-3">
-          <span className="text-[13px] font-bold tracking-tight">Recent takes</span>
+        <div className="flex items-center justify-between border-b border-neutral-100 px-5 py-4">
+          <span className="text-[14px] font-bold tracking-tight text-neutral-900">Recent takes</span>
           <button
             onClick={() => setDrawerOpen(false)}
             aria-label="Close"
-            className="flex h-8 w-8 items-center justify-center rounded-md transition-all duration-200 ease-spring hover:bg-soft hover:rotate-90"
+            className="flex h-8 w-8 items-center justify-center rounded-md text-neutral-500 transition-all duration-200 ease-spring hover:bg-neutral-100 hover:rotate-90"
           >
             ✕
           </button>
         </div>
-        <div className="overflow-y-auto p-3" style={{ maxHeight: 'calc(100vh - 56px)' }}>
+        <div className="overflow-y-auto p-3" style={{ maxHeight: 'calc(100vh - 64px)' }}>
           <ul className="space-y-2">
             {runs.length === 0 ? (
-              <li className="px-2 py-4 text-[12px] text-muted">No takes yet.</li>
+              <li className="px-2 py-4 text-[12px] text-neutral-500">No takes yet.</li>
             ) : (
               runs.map((r, i) => (
                 <li key={r.name} className="msg-model" style={{ animationDelay: `${i * 30}ms` }}>
                   <Link
                     to={`/debug/${encodeURIComponent(r.name)}`}
                     onClick={() => setDrawerOpen(false)}
-                    className="block overflow-hidden rounded-lg border border-line bg-white transition-all duration-200 ease-spring hover:border-neutral-400 hover:-translate-y-0.5 hover:shadow-md"
+                    className="block overflow-hidden rounded-xl border border-neutral-200 bg-white transition-all duration-200 ease-spring hover:border-neutral-300 hover:-translate-y-0.5 hover:shadow-md"
                   >
                     <div className="aspect-video w-full bg-neutral-900">
                       {r.final ? (
@@ -648,12 +744,12 @@ export default function HomePage() {
                         </div>
                       )}
                     </div>
-                    <div className="p-2">
-                      <div className="break-all text-[12.5px] font-bold leading-tight">{r.name}</div>
-                      <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted">
+                    <div className="p-3">
+                      <div className="break-all text-[12.5px] font-bold leading-tight text-neutral-900">{r.name}</div>
+                      <div className="mt-1 flex items-center gap-1.5 text-[11px] text-neutral-500">
                         <span>{plural(r.events, 'mark')}</span>
                         {r.final && (
-                          <span className="rounded-sm bg-green/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-green">
+                          <span className="rounded-sm bg-emerald-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-emerald-700">
                             Rendered
                           </span>
                         )}
