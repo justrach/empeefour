@@ -8,6 +8,7 @@
 import OpenAI from "openai";
 import { OpenAIRealtimeWS } from "openai/realtime/ws";
 import { EventEmitter } from "node:events";
+import { spawn } from "node:child_process";
 import { screen } from "electron";
 
 import { StudioSession, TimelineEvent, appendEvent, loadActiveSession } from "./studio";
@@ -32,6 +33,10 @@ export interface ListenOptions {
   // If provided, "now" with no `time` argument resolves to this playhead
   // instead of clock-since-start_epoch. Used in edit mode for existing takes.
   playheadProvider?: () => number;
+  // Pipe model audio output to ffplay so the user hears the agent.
+  // Default: true. Use headphones — speakers will create a mic feedback loop.
+  speakBack?: boolean;
+  voice?: string;
 }
 
 export type ListenLogLine = { kind: "info" | "heard" | "mark" | "error"; text: string };
@@ -39,6 +44,7 @@ export type ListenLogLine = { kind: "info" | "heard" | "mark" | "error"; text: s
 export class VoiceAgent extends EventEmitter {
   private ws: OpenAIRealtimeWS | null = null;
   private ffmpeg: ReturnType<typeof spawnMacMicPcm> | null = null;
+  private speaker: import("node:child_process").ChildProcess | null = null;
   private session: StudioSession | null = null;
   private runName: string | null = null;
   active = false;
@@ -78,6 +84,10 @@ export class VoiceAgent extends EventEmitter {
 
     ws.socket.on("open", () => {
       ws.send(buildEditingSessionUpdate());
+      if (this.opts.speakBack !== false) {
+        this.startSpeaker();
+        this.log("info", "voice-back on — wear headphones to avoid mic feedback");
+      }
       this.startAudioPump();
     });
 
@@ -101,8 +111,32 @@ export class VoiceAgent extends EventEmitter {
         // DB errors should never break the voice flow
       }
     });
-    // Surface text responses (model emitting prose instead of tools) so we
-    // can see why a tool didn't fire.
+
+    // Pipe model audio chunks to ffplay (24kHz mono s16le) so the user
+    // hears the agent talk back. Only wired when speakBack is on. The
+    // SDK's typed .on signatures don't enumerate every Realtime event, so
+    // cast for the audio events we want to subscribe to.
+    const wsAny = ws as unknown as {
+      on(event: string, cb: (e: unknown) => void): void;
+    };
+    wsAny.on("response.audio.delta", (event) => {
+      const delta = (event as { delta?: string })?.delta;
+      if (!delta || !this.speaker?.stdin?.writable) return;
+      try {
+        this.speaker.stdin.write(Buffer.from(delta, "base64"));
+      } catch {
+        /* speaker died — ignore */
+      }
+    });
+
+    // Show what the model is saying alongside its audio.
+    wsAny.on("response.audio_transcript.done", (event) => {
+      const text = String((event as { transcript?: string })?.transcript || "").trim();
+      if (text) this.log("info", `model: ${text}`);
+    });
+
+    // Surface text-only responses (model emitting prose instead of tools)
+    // so we can see why a tool didn't fire.
     ws.on("response.output_text.done", (event) => {
       const text = String((event as { text?: string }).text || "").trim();
       if (text) this.log("info", `model said (no tool): ${text}`);
@@ -135,7 +169,52 @@ export class VoiceAgent extends EventEmitter {
       }
       this.ffmpeg = null;
     }
+    this.stopSpeaker();
     this.log("info", "stopped");
+  }
+
+  private startSpeaker(): void {
+    try {
+      this.speaker = spawn(
+        "ffplay",
+        [
+          "-autoexit",
+          "-nodisp",
+          "-loglevel", "quiet",
+          "-f", "s16le",
+          "-ar", String(REALTIME_AUDIO.sampleRate),
+          "-ac", String(REALTIME_AUDIO.channels),
+          "-",
+        ],
+        { stdio: ["pipe", "ignore", "ignore"] },
+      );
+      this.speaker.on("exit", () => {
+        this.speaker = null;
+      });
+      this.speaker.on("error", (err) => {
+        this.log("error", `speaker failed: ${err.message}`);
+        this.speaker = null;
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.log("error", `couldn't start ffplay: ${message}`);
+      this.speaker = null;
+    }
+  }
+
+  private stopSpeaker(): void {
+    if (!this.speaker) return;
+    try {
+      this.speaker.stdin?.end();
+    } catch {
+      /* ignore */
+    }
+    try {
+      this.speaker.kill("SIGTERM");
+    } catch {
+      /* ignore */
+    }
+    this.speaker = null;
   }
 
   private startAudioPump(): void {

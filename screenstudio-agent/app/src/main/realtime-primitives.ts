@@ -142,6 +142,9 @@ export interface EditingSessionOptions {
     interruptResponse?: boolean;
   };
   parallelToolCalls?: boolean;
+  // When true (default) the assistant speaks back via PCM audio output.
+  speakBack?: boolean;
+  voice?: string;
 }
 
 export interface RealtimeToolCall {
@@ -160,9 +163,10 @@ export function pcmChunkBytes(audio = REALTIME_AUDIO): number {
 
 export function buildEditingSessionUpdate(opts: EditingSessionOptions = {}): SessionUpdateEvent {
   const vad = opts.vad ?? {};
+  const speakBack = opts.speakBack ?? true;
   const session = {
     type: "realtime",
-    output_modalities: ["text"],
+    output_modalities: speakBack ? ["audio"] : ["text"],
     instructions: opts.instructions ?? EDITOR_SYSTEM_INSTRUCTIONS,
     audio: {
       input: {
@@ -176,6 +180,14 @@ export function buildEditingSessionUpdate(opts: EditingSessionOptions = {}): Ses
           interrupt_response: vad.interruptResponse ?? true,
         },
       },
+      ...(speakBack
+        ? {
+            output: {
+              voice: opts.voice ?? "alloy",
+              format: { type: "audio/pcm", rate: opts.sampleRate ?? REALTIME_AUDIO.sampleRate },
+            },
+          }
+        : {}),
     },
     tools: opts.tools ?? EDITOR_TOOLS,
     tool_choice: "auto",
