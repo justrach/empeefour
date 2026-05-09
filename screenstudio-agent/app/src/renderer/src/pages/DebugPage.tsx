@@ -10,6 +10,7 @@ import {
   type RunSummary,
   type TimelineEvent
 } from '../lib/api'
+import { studio } from '../lib/studio'
 import Timeline from '../components/Timeline'
 
 type EventType = 'zoom' | 'click' | 'caption' | 'speed' | 'cut' | 'marker'
@@ -48,6 +49,8 @@ export default function DebugPage() {
   const [duration, setDuration] = useState(5)
   const [rendering, setRendering] = useState(false)
   const [renderStatus, setRenderStatus] = useState('')
+  const [voiceActive, setVoiceActive] = useState(false)
+  const [voiceLog, setVoiceLog] = useState<string[]>([])
   const videoRef = useRef<HTMLVideoElement | null>(null)
 
   useEffect(() => {
@@ -88,6 +91,34 @@ export default function DebugPage() {
     return () => document.removeEventListener('keydown', onKey)
   }, [])
 
+
+  // Tell main which take voice mode should target.
+  useEffect(() => {
+    studio()?.setEditTarget(selected ?? null)
+  }, [selected])
+
+  // Subscribe to voice state + log lines.
+  useEffect(() => {
+    const s = studio()
+    if (!s) return
+    s.getVoiceState().then((st) => setVoiceActive(!!st.active))
+    const offState = s.onListenState((st) => setVoiceActive(!!st.active))
+    const offLog = s.onListenLog((line) => {
+      setVoiceLog((prev) => [...prev.slice(-50), line])
+    })
+    return () => {
+      offState()
+      offLog()
+    }
+  }, [])
+
+  async function toggleVoice(): Promise<void> {
+    const s = studio()
+    if (!s) return
+    const r = await s.toggleVoice()
+    setVoiceActive(!!r.active)
+  }
+
   const run = runs.find((r) => r.name === selected)
   const videoSrc = run?.final
     ? mediaUrl(run.name, 'final.mp4')
@@ -106,15 +137,20 @@ export default function DebugPage() {
   }
 
   function addEvent(type: EventType): void {
+    const event = defaultsFor(type, currentTime)
     const next: EventsDoc = doc
-      ? { ...doc, events: [...doc.events, defaultsFor(type, currentTime)] }
-      : {
-          version: 1,
-          recording: { start_epoch: 0 },
-          events: [defaultsFor(type, currentTime)]
-        }
+      ? { ...doc, events: [...doc.events, event] }
+      : { version: 1, recording: { start_epoch: 0 }, events: [event] }
     next.events.sort((a, b) => Number(a.time || 0) - Number(b.time || 0))
     persist(next)
+    if (selected) {
+      studio()?.journalEdit({
+        run_name: selected,
+        op: 'add',
+        payload: event,
+        source: 'manual'
+      })
+    }
   }
   function updateEvent(index: number, patch: Partial<TimelineEvent>): void {
     if (!doc) return
@@ -127,11 +163,30 @@ export default function DebugPage() {
     events[index] = { ...events[index], ...cleanPatch }
     events.sort((a, b) => Number(a.time || 0) - Number(b.time || 0))
     persist({ ...doc, events })
+    if (selected) {
+      studio()?.journalEdit({
+        run_name: selected,
+        op: 'update',
+        payload: cleanPatch,
+        source: 'manual',
+        event_index: index
+      })
+    }
   }
   function deleteEvent(index: number): void {
     if (!doc) return
+    const removed = doc.events[index]
     const events = doc.events.filter((_, i) => i !== index)
     persist({ ...doc, events })
+    if (selected) {
+      studio()?.journalEdit({
+        run_name: selected,
+        op: 'delete',
+        payload: removed,
+        source: 'manual',
+        event_index: index
+      })
+    }
   }
   async function handleRender(): Promise<void> {
     if (!selected) return
@@ -180,6 +235,18 @@ export default function DebugPage() {
         <div className="flex items-center gap-2">
           <span className="text-[11px] text-muted tabular-nums">{renderStatus}</span>
           <button
+            onClick={toggleVoice}
+            disabled={!selected || !studio()}
+            className={[
+              'inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-[13px] font-semibold text-white shadow-sm transition disabled:cursor-not-allowed disabled:opacity-50',
+              voiceActive ? 'bg-red-600 hover:bg-red-500' : 'bg-blue hover:opacity-90'
+            ].join(' ')}
+            title={selected ? 'Talk to edit this take' : 'Select a take first'}
+          >
+            <span className={voiceActive ? 'animate-pulse' : ''}>●</span>
+            {voiceActive ? 'Stop Voice' : 'Voice Edit'}
+          </button>
+          <button
             onClick={handleRender}
             disabled={!selected || rendering}
             className="h-8 rounded-md bg-green px-4 text-[13px] font-semibold text-white shadow-sm transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
@@ -223,6 +290,15 @@ export default function DebugPage() {
                 {error}
               </div>
             )}
+            {voiceLog.length > 0 && (
+              <div className="mb-4 rounded-lg border border-line bg-white p-3 text-[12px] text-muted">
+                {voiceLog.slice(-4).map((line, index) => (
+                  <div key={`${index}-${line}`} className="truncate">
+                    {line}
+                  </div>
+                ))}
+              </div>
+            )}
 
             {selected && run ? (
               <>
@@ -239,7 +315,11 @@ export default function DebugPage() {
                         const v = e.currentTarget
                         if (Number.isFinite(v.duration)) setDuration(v.duration)
                       }}
-                      onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
+                      onTimeUpdate={(e) => {
+                        const t = e.currentTarget.currentTime
+                        setCurrentTime(t)
+                        studio()?.setPlayhead(t)
+                      }}
                       onSeeked={(e) => setCurrentTime(e.currentTarget.currentTime)}
                     />
                   ) : (

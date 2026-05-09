@@ -7,142 +7,38 @@
 
 import OpenAI from "openai";
 import { OpenAIRealtimeWS } from "openai/realtime/ws";
-import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { screen } from "electron";
 
 import { StudioSession, TimelineEvent, appendEvent, loadActiveSession } from "./studio";
 import * as db from "./db";
 import { scheduleRefine } from "./refine";
-
-const SAMPLE_RATE = 24_000;
-const CHUNK_MS = 100;
-const CHUNK_BYTES = (SAMPLE_RATE * 2 * CHUNK_MS) / 1000;
-
-const SYSTEM_INSTRUCTIONS = [
-  "You are an editing assistant for a screen recording. Your ONLY job is to call",
-  "the right tool when the user mentions an editing action. Be liberal -- any",
-  "mention of zoom/cut/caption/speed/click/mark, even phrased as a question or",
-  "suggestion, IS a command. Examples of utterances that should fire tools:",
-  "",
-  "- 'zoom in here' -> mark_zoom (cursor, now)",
-  "- 'can we zoom in a little?' -> mark_zoom (cursor, now)",
-  "- 'lets zoom on second 12' -> mark_zoom(time=12)",
-  "- 'this click is important' -> mark_click",
-  "- 'caption this as Open settings' -> mark_caption(text='Open settings')",
-  "- 'speed this up' -> mark_speed (last 6 sec at 2.5x)",
-  "- 'speed from 4 to 9' -> mark_speed(start=4, end=9)",
-  "- 'cut from 5 to 8' -> mark_cut(start=5, end=8)",
-  "- 'delete this part' / 'remove that bit' -> mark_cut (recent span)",
-  "- 'mark this' / 'remember this' -> mark_marker",
-  "",
-  "When in doubt, FIRE A TOOL. False positives are fine; missed marks are not.",
-  "Do not respond with text. Only emit tool calls.",
-].join("\n");
-
-const TOOLS = [
-  {
-    type: "function",
-    name: "mark_zoom",
-    description:
-      "Zoom in on the user's cursor at a moment in time. Use for 'zoom here' (now) or 'zoom on second N' (specific time).",
-    parameters: {
-      type: "object",
-      properties: {
-        time: { type: "number", description: "Seconds from recording start. Omit for 'now'." },
-        label: { type: "string", description: "Brief label, e.g. 'settings panel'" },
-        scale: { type: "number", description: "1.2-1.8 (default 1.4)" },
-        duration: { type: "number", description: "Hold seconds (default 1.6)" },
-      },
-    },
-  },
-  {
-    type: "function",
-    name: "mark_click",
-    description:
-      "Mark a click moment with zoom emphasis at the cursor position. Use for 'click this', 'this click'.",
-    parameters: {
-      type: "object",
-      properties: {
-        time: { type: "number", description: "Seconds from start. Omit for 'now'." },
-        label: { type: "string" },
-        scale: { type: "number" },
-        duration: { type: "number" },
-      },
-    },
-  },
-  {
-    type: "function",
-    name: "mark_caption",
-    description:
-      "Add an on-screen caption. Use for 'caption this as <text>' or 'caption second N as <text>'.",
-    parameters: {
-      type: "object",
-      properties: {
-        text: { type: "string" },
-        time: { type: "number", description: "Seconds from start. Omit for 'now'." },
-        duration: { type: "number", description: "default 2.0" },
-        position: { type: "string", enum: ["top", "bottom"] },
-      },
-      required: ["text"],
-    },
-  },
-  {
-    type: "function",
-    name: "mark_speed",
-    description:
-      "Speed up a span. Use for 'speed up from N to M' or 'speed this up' (recent N seconds).",
-    parameters: {
-      type: "object",
-      properties: {
-        start: { type: "number", description: "Start time in seconds (omit if user said 'this')" },
-        end: { type: "number", description: "End time in seconds" },
-        seconds_back: { type: "number", description: "If start/end omitted, look back N seconds (default 6)" },
-        factor: { type: "number", description: "Speed multiplier (default 2.5)" },
-        label: { type: "string" },
-      },
-    },
-  },
-  {
-    type: "function",
-    name: "mark_cut",
-    description:
-      "REMOVE a span of footage entirely. Use for 'cut from N to M', 'cut second N to second M', 'delete this part'.",
-    parameters: {
-      type: "object",
-      properties: {
-        start: { type: "number", description: "Start time in seconds" },
-        end: { type: "number", description: "End time in seconds" },
-        label: { type: "string", description: "Optional reason, e.g. 'dead air'" },
-      },
-      required: ["start", "end"],
-    },
-  },
-  {
-    type: "function",
-    name: "mark_marker",
-    description: "Drop a generic timeline marker. Use for 'mark this', 'remember this point'.",
-    parameters: {
-      type: "object",
-      properties: {
-        label: { type: "string" },
-        time: { type: "number", description: "Seconds from start. Omit for 'now'." },
-      },
-      required: ["label"],
-    },
-  },
-];
+import {
+  PcmChunker,
+  REALTIME_AUDIO,
+  buildEditingSessionUpdate,
+  inputAudioAppendEvent,
+  parseRealtimeToolCall,
+  spawnMacMicPcm,
+  type RealtimeToolCall,
+} from "./realtime-primitives";
 
 export interface ListenOptions {
   model?: string;
   micDevice?: string;
+  // If provided, the agent attaches to THIS session (edit mode) instead of
+  // pulling from the live recording pointer. "now" still maps via start_epoch.
+  sessionProvider?: () => Promise<StudioSession | null>;
+  // If provided, "now" with no `time` argument resolves to this playhead
+  // instead of clock-since-start_epoch. Used in edit mode for existing takes.
+  playheadProvider?: () => number;
 }
 
 export type ListenLogLine = { kind: "info" | "heard" | "mark" | "error"; text: string };
 
 export class VoiceAgent extends EventEmitter {
   private ws: OpenAIRealtimeWS | null = null;
-  private ffmpeg: ReturnType<typeof spawn> | null = null;
+  private ffmpeg: ReturnType<typeof spawnMacMicPcm> | null = null;
   private session: StudioSession | null = null;
   private runName: string | null = null;
   active = false;
@@ -156,8 +52,10 @@ export class VoiceAgent extends EventEmitter {
     if (!process.env.OPENAI_API_KEY) {
       throw new Error("OPENAI_API_KEY not set; populate screenstudio-agent/.env");
     }
-    const session = await loadActiveSession();
-    if (!session) throw new Error("No active recording. Click Start first.");
+    const session = await (this.opts.sessionProvider
+      ? this.opts.sessionProvider()
+      : loadActiveSession());
+    if (!session) throw new Error("No session to attach to. Select a take or start a recording first.");
     this.session = session;
     this.runName = (session.run_dir.split("/").pop() || null);
     this.active = true;
@@ -171,16 +69,7 @@ export class VoiceAgent extends EventEmitter {
     this.log("info", `model: ${model}`);
 
     const mic = this.opts.micDevice || db.getPreference("mic_device") || ":0";
-    this.ffmpeg = spawn(
-      "ffmpeg",
-      [
-        "-hide_banner", "-loglevel", "error",
-        "-f", "avfoundation", "-i", mic,
-        "-ac", "1", "-ar", String(SAMPLE_RATE),
-        "-f", "s16le", "-",
-      ],
-      { stdio: ["ignore", "pipe", "pipe"] },
-    );
+    this.ffmpeg = spawnMacMicPcm({ device: mic, sampleRate: REALTIME_AUDIO.sampleRate });
     this.ffmpeg.stderr?.on("data", (d: Buffer) => this.log("error", d.toString().trim()));
 
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -188,36 +77,13 @@ export class VoiceAgent extends EventEmitter {
     this.ws = ws;
 
     ws.socket.on("open", () => {
-      ws.send({
-        type: "session.update",
-        session: {
-          type: "realtime",
-          output_modalities: ["text"],
-          instructions: SYSTEM_INSTRUCTIONS,
-          audio: {
-            input: {
-              format: { type: "audio/pcm", rate: 24000 },
-              transcription: { model: "whisper-1" },
-              turn_detection: {
-                type: "server_vad",
-                threshold: 0.5,
-                silence_duration_ms: 500,
-                create_response: true,
-                interrupt_response: true,
-              },
-            },
-          },
-          tools: TOOLS,
-          tool_choice: "auto",
-        },
-      } as never);
+      ws.send(buildEditingSessionUpdate());
       this.startAudioPump();
     });
 
     ws.on("response.function_call_arguments.done", (event) => {
-      const name = (event as { name?: string }).name || "";
-      const argsRaw = (event as { arguments?: string }).arguments || "{}";
-      this.handleToolCall(name, argsRaw).catch((err: Error) =>
+      const call = parseRealtimeToolCall(event);
+      this.handleToolCall(call).catch((err: Error) =>
         this.log("error", `tool dispatch failed: ${err.message}`),
       );
     });
@@ -276,36 +142,29 @@ export class VoiceAgent extends EventEmitter {
     if (!this.ffmpeg || !this.ws) return;
     const stream = this.ffmpeg.stdout;
     if (!stream) return;
-    let pending: Buffer = Buffer.alloc(0);
-    stream.on("data", (chunk: Buffer) => {
-      pending = Buffer.concat([pending, chunk]);
-      while (pending.length >= CHUNK_BYTES && this.ws && this.active) {
-        const out = pending.subarray(0, CHUNK_BYTES);
-        pending = pending.subarray(CHUNK_BYTES);
-        try {
-          this.ws.send({
-            type: "input_audio_buffer.append",
-            audio: out.toString("base64"),
-          });
-        } catch {
-          return;
-        }
+    const chunker = new PcmChunker((chunk) => {
+      if (!this.ws || !this.active) return;
+      try {
+        this.ws.send(inputAudioAppendEvent(chunk));
+      } catch {
+        chunker.clear();
       }
+    });
+    stream.on("data", (chunk: Buffer) => {
+      chunker.push(chunk);
     });
     stream.on("end", () => this.log("info", "ffmpeg stream ended"));
   }
 
-  private async handleToolCall(name: string, argsRaw: string): Promise<void> {
+  private async handleToolCall(call: RealtimeToolCall): Promise<void> {
     if (!this.session) return;
-    let args: Record<string, unknown> = {};
-    try {
-      args = JSON.parse(argsRaw);
-    } catch {
-      args = {};
-    }
+    const { name, argsRaw, args } = call;
 
-    const nowFromStart =
-      Math.round((Date.now() / 1000 - this.session.start_epoch) * 1000) / 1000;
+    // In edit mode (playheadProvider given), "now" = video playhead.
+    // In recording mode, "now" = clock - start_epoch.
+    const nowFromStart = this.opts.playheadProvider
+      ? Math.round(this.opts.playheadProvider() * 1000) / 1000
+      : Math.round((Date.now() / 1000 - this.session.start_epoch) * 1000) / 1000;
     const requestedTime = numOrUndef(args.time);
     const eventTime = requestedTime !== undefined ? requestedTime : nowFromStart;
 

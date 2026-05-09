@@ -2,8 +2,9 @@
 
 How the OpenAI Realtime API is wired into this project, plus the wire-format
 reference notes that future-you will want when the SDK shifts under you.
-Anchored against `electron/src/listen.ts`, the only file in the repo that
-opens a Realtime session.
+Anchored against `app/src/main/listen.ts`, the file that opens a Realtime
+session, and `app/src/main/realtime-primitives.ts`, the small local wrapper
+for the wire-format pieces.
 
 Source for the protocol details: the `openai-node` SDK
 (`src/resources/realtime/`) — the older `src/resources/beta/realtime/` is
@@ -20,7 +21,7 @@ mic ── ffmpeg avfoundation ──> 24 kHz s16le PCM ──> input_audio_buff
                                                           │
                               response.function_call_arguments.done
                                                           │
-                                  VoiceAgent.handleToolCall (listen.ts)
+                    parseRealtimeToolCall → VoiceAgent.handleToolCall
                                                           │
                                             appendEvent → events.json
 ```
@@ -28,6 +29,17 @@ mic ── ffmpeg avfoundation ──> 24 kHz s16le PCM ──> input_audio_buff
 We never play audio back; `output_modalities: ["text"]` keeps the model in
 "text + tool calls only" mode. The only thing we want from the model is the
 right tool call at the right moment.
+
+The project-owned primitives live in `app/src/main/realtime-primitives.ts`:
+
+| Primitive | Job |
+|---|---|
+| `buildEditingSessionUpdate()` | Builds the modern `session.update` payload with text-only output, nested `audio.input`, server VAD, transcription, tools, and `tool_choice: "auto"`. |
+| `spawnMacMicPcm()` | Starts the macOS mic capture process (`ffmpeg avfoundation`) as 24 kHz mono s16le PCM. |
+| `PcmChunker` | Turns arbitrary stdout buffers into fixed 100 ms PCM chunks. |
+| `inputAudioAppendEvent()` | Converts a PCM chunk into `input_audio_buffer.append`. |
+| `parseRealtimeToolCall()` | Parses `response.function_call_arguments.done` into `{ name, argsRaw, args, callId, ... }`. |
+| `functionCallOutputEvent()` / `responseCreateEvent()` | The optional tool-result echo path for future non-fire-and-forget tools. |
 
 ## 1. Connection
 
@@ -53,7 +65,7 @@ const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const ws = new OpenAIRealtimeWS({ model: "gpt-realtime-2" }, client);
 ```
 
-(see `listen.ts:186-188`.)
+(see `app/src/main/listen.ts`.)
 
 For **client-side** apps, mint an ephemeral token first so your real key
 never leaves the server:
@@ -99,32 +111,10 @@ single WebSocket. Both `OpenAIRealtimeWS` and the browser variant extend
 | `response.done` | Wraps a turn. Inspect `response.status === "failed"` for errors. |
 | `error` | Server-side problem — bad payload, rate limit, etc. |
 
-Our `session.update` payload (from `listen.ts:191-213`):
+Our `session.update` payload is built by `buildEditingSessionUpdate()`:
 
 ```ts
-ws.send({
-  type: "session.update",
-  session: {
-    type: "realtime",
-    output_modalities: ["text"],
-    instructions: SYSTEM_INSTRUCTIONS,
-    audio: {
-      input: {
-        format: { type: "audio/pcm", rate: 24000 },
-        transcription: { model: "whisper-1" },
-        turn_detection: {
-          type: "server_vad",
-          threshold: 0.5,
-          silence_duration_ms: 500,
-          create_response: true,
-          interrupt_response: true,
-        },
-      },
-    },
-    tools: TOOLS,
-    tool_choice: "auto",
-  },
-});
+ws.send(buildEditingSessionUpdate());
 ```
 
 Notes on the shape that bit us before:
@@ -178,13 +168,12 @@ Subscribe to `response.function_call_arguments.done`. Payload:
 
 (Stream partials via `…delta` if you want progress; we don't.)
 
-In `listen.ts:217-223`:
+In `app/src/main/listen.ts`, the SDK event is normalized before dispatch:
 
 ```ts
 ws.on("response.function_call_arguments.done", (event) => {
-  const name = (event as { name?: string }).name || "";
-  const argsRaw = (event as { arguments?: string }).arguments || "{}";
-  this.handleToolCall(name, argsRaw).catch(...);
+  const call = parseRealtimeToolCall(event);
+  this.handleToolCall(call).catch(...);
 });
 ```
 
@@ -195,15 +184,8 @@ We don't currently echo results — our tools are fire-and-forget edits to
 to *see* the result of a tool (e.g. "did the zoom land?"), the round-trip is:
 
 ```ts
-ws.send({
-  type: "conversation.item.create",
-  item: {
-    type: "function_call_output",
-    call_id: "call_…",      // copy from the done event
-    output: "ok",            // free-text string; can be JSON-encoded if you like
-  },
-});
-ws.send({ type: "response.create" });   // ask the model to react
+ws.send(functionCallOutputEvent(call.callId, { ok: true }));
+ws.send(responseCreateEvent());   // ask the model to react
 ```
 
 The relevant SDK types: `RealtimeFunctionTool`,
@@ -221,31 +203,18 @@ Supported input/output formats:
 | `g711_ulaw` | 8 kHz μ-law (telephony) |
 | `g711_alaw` | 8 kHz A-law (telephony) |
 
-We use 24 kHz PCM16 mono. The pump (`listen.ts:275-296`) reads from
-`ffmpeg`'s stdout in 100 ms chunks and base64-encodes each one:
+We use 24 kHz PCM16 mono. `spawnMacMicPcm()` starts `ffmpeg`, and
+`PcmChunker` reads stdout in 100 ms chunks before `inputAudioAppendEvent()`
+base64-encodes each one:
 
 ```ts
-this.ffmpeg = spawn("ffmpeg", [
-  "-hide_banner", "-loglevel", "error",
-  "-f", "avfoundation", "-i", mic,    // ":0" = default Mac mic
-  "-ac", "1", "-ar", "24000",
-  "-f", "s16le", "-",
-]);
+this.ffmpeg = spawnMacMicPcm({ device: mic, sampleRate: REALTIME_AUDIO.sampleRate });
 
-// SAMPLE_RATE * 2 bytes/sample * 0.1 s = 4800-byte chunks
-const CHUNK_BYTES = (24_000 * 2 * 100) / 1000;
-
-stream.on("data", (chunk) => {
-  pending = Buffer.concat([pending, chunk]);
-  while (pending.length >= CHUNK_BYTES) {
-    const out = pending.subarray(0, CHUNK_BYTES);
-    pending = pending.subarray(CHUNK_BYTES);
-    ws.send({
-      type: "input_audio_buffer.append",
-      audio: out.toString("base64"),
-    });
-  }
+const chunker = new PcmChunker((chunk) => {
+  ws.send(inputAudioAppendEvent(chunk));
 });
+
+stream.on("data", (chunk) => chunker.push(chunk));
 ```
 
 Server VAD does the turn-cutting. If you want push-to-talk, drop
@@ -275,7 +244,7 @@ older preview family — works, but is the one you'd migrate *off*. The
 `-mini` and `gpt-audio-*` families exist if you want cheaper/faster
 realtime.
 
-Resolution order in `listen.ts:165-169`:
+Resolution order in `app/src/main/listen.ts`:
 
 ```
 this.opts.model
@@ -294,6 +263,8 @@ this.opts.model
 | `RealtimeSession` | type | Session config object — what goes inside `session.update.session`. |
 | `RealtimeFunctionTool` | type | A single entry in `session.tools`. |
 | `client.realtime.clientSecrets.create()` | REST | Mint an ephemeral `ek_…` token for browser/mobile. |
+| `buildEditingSessionUpdate` | local primitive | Produces the current `session.update` shape from SDK types so old beta keys don't leak in. |
+| `PcmChunker` | local primitive | Keeps audio chunks at the exact sample-rate-derived byte size. |
 
 ## 7. Failure modes you'll hit
 
@@ -303,8 +274,8 @@ this.opts.model
 - **No tool calls fire** — the model decided your phrase is conversational.
   Make the system prompt explicit ("any mention of X IS a command") and
   watch `response.output_text.done` to see what the model said instead.
-  Our `SYSTEM_INSTRUCTIONS` in `listen.ts:22-41` is deliberately aggressive
-  for exactly this reason.
+  `EDITOR_SYSTEM_INSTRUCTIONS` in `realtime-primitives.ts` is deliberately
+  aggressive for exactly this reason.
 - **`response.failed`** with no obvious cause — check `response.done` for
   `status_details.error.message`; it's usually a tool whose JSON Schema
   rejected the model's output.

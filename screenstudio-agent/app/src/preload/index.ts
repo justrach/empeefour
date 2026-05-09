@@ -3,9 +3,16 @@ import { contextBridge, ipcRenderer } from 'electron'
 interface VoiceState { active: boolean }
 interface AgentStats { runs: number; utterances: number; tool_calls: number }
 
+type EditOp = 'add' | 'update' | 'delete' | 'render' | 'polish'
+type EditSource = 'voice' | 'manual' | 'agent'
+
 const studio = {
   toggleVoice: (): Promise<VoiceState> => ipcRenderer.invoke('voice:toggle'),
   getVoiceState: (): Promise<VoiceState> => ipcRenderer.invoke('voice:state'),
+  setEditTarget: (runName: string | null): Promise<{ ok: boolean; editTarget: string | null }> =>
+    ipcRenderer.invoke('voice:setEditTarget', runName),
+  setPlayhead: (time: number): Promise<void> =>
+    ipcRenderer.invoke('voice:setPlayhead', time),
   onListenLog(cb: (line: string) => void) {
     const handler = (_e: unknown, line: string): void => cb(line)
     ipcRenderer.on('listen:log', handler)
@@ -22,7 +29,16 @@ const studio = {
   },
   stats: (): Promise<AgentStats> => ipcRenderer.invoke('agent:stats'),
   polishRun: (payload: { runName: string; apply: boolean }) =>
-    ipcRenderer.invoke('polish:run', payload)
+    ipcRenderer.invoke('polish:run', payload),
+  journalEdit: (e: {
+    run_name: string
+    op: EditOp
+    payload: unknown
+    source: EditSource
+    event_index?: number | null
+  }) => ipcRenderer.invoke('journal:edit', e),
+  journalRecent: (runName: string, limit?: number) =>
+    ipcRenderer.invoke('journal:recent', runName, limit)
 }
 
 if (process.contextIsolated) {

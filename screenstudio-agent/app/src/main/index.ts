@@ -26,6 +26,8 @@ let mainWindow: BrowserWindow | null = null
 let editorProc: ChildProcess | null = null
 let voice: VoiceAgent | null = null
 let voiceOwnsRecording = false
+let editTargetRun: string | null = null
+let currentPlayhead = 0
 
 function startEditorProcess(): void {
   const proc = spawnStudio(['editor', '--host', EDITOR_HOST, '--port', String(EDITOR_PORT)])
@@ -108,30 +110,54 @@ async function waitForActiveSession(timeoutMs = 5000): Promise<boolean> {
   return false
 }
 
+async function loadEditTargetSession(): Promise<import('./studio').StudioSession | null> {
+  if (!editTargetRun) return null
+  const dir = path.join(PROJECT_ROOT, 'runs', editTargetRun)
+  try {
+    const raw = await fs.readFile(path.join(dir, 'session.json'), 'utf-8')
+    return JSON.parse(raw)
+  } catch {
+    return null
+  }
+}
+
 async function setVoiceMode(enabled: boolean): Promise<{ active: boolean }> {
   if (enabled) {
     if (voice?.active) return { active: true }
-    const active = await loadActiveSession()
-    if (!active) {
-      mainWindow?.webContents.send('listen:log', '[info] starting recording...')
-      try {
-        await postEditor('/api/record/start', { cursor: true, show_clicks: true, audio: false })
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        mainWindow?.webContents.send('listen:log', `[error] start failed: ${message}`)
-        return { active: false }
-      }
-      const ok = await waitForActiveSession()
-      if (!ok) {
-        mainWindow?.webContents.send('listen:log', "[error] recording didn't come up")
-        return { active: false }
-      }
-      voiceOwnsRecording = true
-    } else {
+
+    // Edit-mode path: if a take has been selected as the edit target,
+    // attach to its session WITHOUT auto-starting a new recording.
+    if (editTargetRun) {
+      mainWindow?.webContents.send('listen:log', `[info] editing ${editTargetRun}`)
       voiceOwnsRecording = false
+      voice = new VoiceAgent({
+        sessionProvider: () => loadEditTargetSession(),
+        playheadProvider: () => currentPlayhead
+      })
+    } else {
+      // Recording-mode path (legacy): if no live recording, start one.
+      const active = await loadActiveSession()
+      if (!active) {
+        mainWindow?.webContents.send('listen:log', '[info] starting recording...')
+        try {
+          await postEditor('/api/record/start', { cursor: true, show_clicks: true, audio: false })
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          mainWindow?.webContents.send('listen:log', `[error] start failed: ${message}`)
+          return { active: false }
+        }
+        const ok = await waitForActiveSession()
+        if (!ok) {
+          mainWindow?.webContents.send('listen:log', "[error] recording didn't come up")
+          return { active: false }
+        }
+        voiceOwnsRecording = true
+      } else {
+        voiceOwnsRecording = false
+      }
+      voice = new VoiceAgent()
     }
 
-    voice = new VoiceAgent()
     voice.on('log', (line: ListenLogLine) => {
       const formatted = line.kind === 'mark' ? `+ ${line.text}` : `[${line.kind}] ${line.text}`
       mainWindow?.webContents.send('listen:log', formatted)
@@ -201,6 +227,43 @@ function createWindow(): void {
   }
 }
 
+async function cleanupDeadSession(): Promise<void> {
+  // If current.json points at a session whose PID is no longer running,
+  // mark it stopped + clear the pointer so the UI starts idle.
+  const pointer = path.join(PROJECT_ROOT, '.agentic-studio', 'current.json')
+  let sessionFile: string | null = null
+  try {
+    const raw = await fs.readFile(pointer, 'utf-8')
+    sessionFile = (JSON.parse(raw) as { session_file?: string }).session_file || null
+  } catch {
+    return
+  }
+  if (!sessionFile) return
+  let session: { pid?: number; start_epoch?: number; status?: string }
+  try {
+    session = JSON.parse(await fs.readFile(sessionFile, 'utf-8'))
+  } catch {
+    await fs.unlink(pointer).catch(() => {})
+    return
+  }
+  if (!session.pid) return
+  let alive = false
+  try {
+    process.kill(session.pid, 0)
+    alive = true
+  } catch {
+    alive = false
+  }
+  if (alive) return
+  console.log(`[cleanup] zombie session pid=${session.pid} — marking stopped`)
+  session.status = 'stopped'
+  if (!('stop_epoch' in session)) {
+    ;(session as { stop_epoch: number }).stop_epoch = (session.start_epoch || 0) + 5
+  }
+  await fs.writeFile(sessionFile, JSON.stringify(session, null, 2), 'utf-8')
+  await fs.unlink(pointer).catch(() => {})
+}
+
 async function syncRunsToDb(): Promise<void> {
   const runsDir = path.join(PROJECT_ROOT, 'runs')
   let entries: string[] = []
@@ -242,12 +305,35 @@ async function syncRunsToDb(): Promise<void> {
 
 ipcMain.handle('voice:toggle', () => setVoiceMode(!voice?.active))
 ipcMain.handle('voice:state', () => ({ active: !!voice?.active }))
+ipcMain.handle('voice:setEditTarget', (_e, runName: string | null) => {
+  editTargetRun = runName
+  return { ok: true, editTarget: runName }
+})
+ipcMain.handle('voice:setPlayhead', (_e, time: number) => {
+  currentPlayhead = Number(time) || 0
+})
 ipcMain.handle('polish:run', async (_e, payload: { runName: string; apply: boolean }) => {
   const runDir = path.join(PROJECT_ROOT, 'runs', payload.runName)
   const target = await polish(runDir, { apply: payload.apply })
+  db.recordEdit({
+    run_name: payload.runName,
+    op: 'polish',
+    payload: { apply: payload.apply, target },
+    source: 'agent'
+  })
   return { ok: true, target }
 })
 ipcMain.handle('agent:stats', () => db.stats())
+ipcMain.handle(
+  'journal:edit',
+  (_e, e: { run_name: string; op: 'add' | 'update' | 'delete' | 'render' | 'polish'; payload: unknown; source: 'voice' | 'manual' | 'agent'; event_index?: number | null }) => {
+    db.recordEdit(e)
+    return { ok: true }
+  }
+)
+ipcMain.handle('journal:recent', (_e, runName: string, limit?: number) =>
+  db.recentEdits(runName, limit ?? 50)
+)
 
 app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.empeefour.studio')
@@ -260,6 +346,7 @@ app.whenReady().then(async () => {
     console.error('[editor]', err instanceof Error ? err.message : String(err))
   }
 
+  await cleanupDeadSession().catch((e) => console.error('[cleanup] failed:', e))
   await syncRunsToDb().catch((e) => console.error('[db] sync failed:', e))
 
   if (isConfigured()) {

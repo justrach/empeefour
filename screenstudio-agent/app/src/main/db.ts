@@ -67,6 +67,19 @@ CREATE TABLE IF NOT EXISTS suggestions (
   UNIQUE (kind, text)
 );
 CREATE INDEX IF NOT EXISTS suggestions_kind ON suggestions(kind, uses DESC);
+
+-- Journal of every timeline mutation. Source of truth for "what edits has
+-- this take seen?" — useful for undo, audit, and rendering from history.
+CREATE TABLE IF NOT EXISTS edits (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_name    TEXT NOT NULL,
+  op          TEXT NOT NULL,           -- add|update|delete|render|polish
+  payload     TEXT NOT NULL,           -- JSON of the event/patch/render-opts
+  source      TEXT NOT NULL,           -- voice|manual|agent
+  event_index INTEGER,                 -- nullable; the index touched, if any
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS edits_run_time ON edits(run_name, created_at DESC);
 `;
 
 export interface RunRow {
@@ -128,6 +141,49 @@ export function recordToolCall(call: ToolCallInsert): void {
     call.status,
     call.error ?? null,
   );
+}
+
+export type EditOp = "add" | "update" | "delete" | "render" | "polish";
+export type EditSource = "voice" | "manual" | "agent";
+
+export interface EditEntry {
+  run_name: string;
+  op: EditOp;
+  payload: unknown;
+  source: EditSource;
+  event_index?: number | null;
+}
+
+export function recordEdit(e: EditEntry): void {
+  open().prepare(
+    `INSERT INTO edits (run_name, op, payload, source, event_index)
+       VALUES (?, ?, ?, ?, ?)`,
+  ).run(
+    e.run_name,
+    e.op,
+    JSON.stringify(e.payload ?? null),
+    e.source,
+    e.event_index ?? null,
+  );
+}
+
+export interface EditRow {
+  id: number;
+  run_name: string;
+  op: EditOp;
+  payload: string;
+  source: EditSource;
+  event_index: number | null;
+  created_at: string;
+}
+
+export function recentEdits(run_name: string, limit = 50): EditRow[] {
+  return open()
+    .prepare(
+      "SELECT id, run_name, op, payload, source, event_index, created_at " +
+      "FROM edits WHERE run_name = ? ORDER BY id DESC LIMIT ?",
+    )
+    .all(run_name, limit) as EditRow[];
 }
 
 export function upsertRun(row: RunRow): void {
