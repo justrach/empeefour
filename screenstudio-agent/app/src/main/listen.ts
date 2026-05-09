@@ -230,6 +230,9 @@ export class VoiceAgent extends EventEmitter {
       const msg = err.message || String(err);
       // Benign race when our async tool result lands while VAD is mid-turn.
       if (msg.includes("already has an active response")) return;
+      // Benign race when VAD speech_started fires right as the response
+      // naturally ended — we sent response.cancel a hair too late.
+      if (msg.includes("no active response found")) return;
       this.log("error", msg);
     });
     ws.socket.on("close", () => this.log("info", "ws closed"));
