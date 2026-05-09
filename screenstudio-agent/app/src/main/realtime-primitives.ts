@@ -46,6 +46,11 @@ export const EDITOR_SYSTEM_INSTRUCTIONS = [
   "query and the relevant metric. Briefly say 'checking your health data…'. Stats",
   "land as a system note — verbalize the key numbers naturally in 2-4 sentences.",
   "",
+  "When the user asks to make/draw/render/visualize an image, picture, mock-up,",
+  "thumbnail, or background, fire generate_image with a vivid prompt. Briefly",
+  "say 'rendering an image…' first. The save path lands as a system note —",
+  "mention the save location + a one-sentence description of what you made.",
+  "",
   "Never fire mark_cut without both start AND end. Never fire mark_caption with",
   "empty text. Don't fire tools on filler ('uh', 'oh', 'one'), background noise,",
   "or non-English Whisper hallucinations like '谢谢观看' / '请订阅'.",
@@ -164,6 +169,32 @@ export const EDITOR_TOOLS = [
         time: { type: "number", description: "Seconds from start. Omit for 'now'." },
       },
       required: ["label"],
+    },
+  },
+  {
+    type: "function",
+    name: "generate_image",
+    description:
+      "Create an image from a text prompt using gpt-image-2-2026-04-21. Saves a PNG to ~/empeefour/screenstudio-agent/runs/images/ and opens it. Use whenever the user asks to make/draw/render/imagine/visualize an image, picture, illustration, mock-up, thumbnail, or background. Briefly say 'rendering an image…' first. The save path lands as a system note for you to mention.",
+    parameters: {
+      type: "object",
+      properties: {
+        prompt: {
+          type: "string",
+          description: "Vivid description of the desired image. Include style, mood, composition. Up to 32k chars.",
+        },
+        size: {
+          type: "string",
+          enum: ["1024x1024", "1536x1024", "1024x1536", "auto"],
+          description: "Aspect: square / landscape / portrait. Default 'auto'.",
+        },
+        quality: {
+          type: "string",
+          enum: ["low", "medium", "high", "auto"],
+          description: "Render quality. Default 'auto'. Use 'high' only when the user asks for detail.",
+        },
+      },
+      required: ["prompt"],
     },
   },
   {

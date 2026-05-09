@@ -8,6 +8,7 @@
 import OpenAI from "openai";
 import { OpenAIRealtimeWS } from "openai/realtime/ws";
 import { EventEmitter } from "node:events";
+import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -551,6 +552,22 @@ export class VoiceAgent extends EventEmitter {
           void this.runWebSearch(query, numResults);
           return;
         }
+        case "generate_image": {
+          const prompt = String(args.prompt || "").trim();
+          if (!prompt) {
+            this.log("error", "generate_image: empty prompt");
+            callRecord("skipped", null, "empty prompt");
+            this.sendToolOutput(call.callId, { ok: false, error: "prompt required" }, false);
+            return;
+          }
+          const size = String(args.size || "auto");
+          const quality = String(args.quality || "auto");
+          this.log("info", `generate_image: ${prompt.slice(0, 60)}`);
+          callRecord("ok", null);
+          this.sendToolOutput(call.callId, { status: "rendering", prompt, size, quality }, true);
+          void this.runGenerateImage(prompt, size, quality);
+          return;
+        }
         case "health_data_analysis": {
           const query = String(args.query || "").trim();
           const metric = strOrUndef(args.metric) ?? "summary";
@@ -631,7 +648,45 @@ export class VoiceAgent extends EventEmitter {
     }
   }
 
-private async runWebSearch(query: string, numResults: number): Promise<void> {
+private async runGenerateImage(prompt: string, size: string, quality: string): Promise<void> {
+    if (!process.env.OPENAI_API_KEY) {
+      this.sendSystemNote("Image generation unavailable: OPENAI_API_KEY missing.");
+      return;
+    }
+    try {
+      const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+      const res = await client.images.generate({
+        model: "gpt-image-2-2026-04-21",
+        prompt,
+        size: size as never,
+        quality: quality as never,
+        output_format: "png",
+      });
+      const b64 = res.data?.[0]?.b64_json;
+      if (!b64) {
+        this.sendSystemNote("Image generation returned no data.");
+        return;
+      }
+      const dir = path.join(os.homedir(), "empeefour", "screenstudio-agent", "runs", "images");
+      fs.mkdirSync(dir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const file = path.join(dir, `img-${stamp}.png`);
+      fs.writeFileSync(file, Buffer.from(b64, "base64"));
+      this.log("info", `image saved: ${file}`);
+      try {
+        spawn("open", [file], { detached: true, stdio: "ignore" }).unref();
+      } catch {
+        /* ignore */
+      }
+      this.sendSystemNote(`Image generated and saved to ${file}. Tell the user it's open and one short sentence about what was made.`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log("error", `generate_image failed: ${msg}`);
+      this.sendSystemNote(`Image generation failed: ${msg}`);
+    }
+  }
+
+  private async runWebSearch(query: string, numResults: number): Promise<void> {
     const apiKey = process.env.EXA_API_KEY || process.env["EXA-API-KEY"];
     if (!apiKey) {
       this.log("error", "web_search: EXA_API_KEY not set");
