@@ -331,6 +331,10 @@ ipcMain.handle('voice:setMuted', (_e, muted: boolean) => {
   voice?.setMuted(!!muted)
   return { ok: true, muted: !!muted }
 })
+  ipcMain.handle('voice:commitAudio', () => {
+    voice?.commitInputAudio()
+    return { ok: true }
+  })
 ipcMain.handle('polish:run', async (_e, payload: { runName: string; apply: boolean }) => {
   const runDir = path.join(PROJECT_ROOT, 'runs', payload.runName)
   const target = await polish(runDir, { apply: payload.apply })

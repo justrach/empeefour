@@ -278,6 +278,19 @@ export class VoiceAgent extends EventEmitter {
     this.log("info", value ? "mic muted" : "mic listening");
   }
 
+  // Force the server to commit whatever audio it has buffered and (with
+  // create_response:true) immediately fire a response, instead of waiting
+  // out the full silence_duration_ms after the user lets go of PTT.
+  // Cuts ~600ms of dead air per turn.
+  commitInputAudio(): void {
+    if (!this.ws) return;
+    try {
+      (this.ws as unknown as { send(e: unknown): void }).send({ type: "input_audio_buffer.commit" });
+    } catch (err) {
+      this.log("error", `commit failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   // Required by the Realtime API: every tool call the model makes needs a
   // matching function_call_output, otherwise the conversation thread is
   // broken and the model improvises ("still running in the background")

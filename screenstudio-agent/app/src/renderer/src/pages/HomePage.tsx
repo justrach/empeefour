@@ -70,7 +70,6 @@ export default function HomePage() {
   const [chat, setChat] = useState<ChatMsg[]>([])
   const [balloons, setBalloons] = useState<Balloon[]>([])
   const [tipIdx, setTipIdx] = useState(0)
-  const wasMutedBeforeSpace = useRef(false)
   const audioCtxRef = useRef<AudioContext | null>(null)
   const audioNextRef = useRef<number>(0)
   const audioSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set())
@@ -271,19 +270,15 @@ export default function HomePage() {
     function onKeyDown(e: KeyboardEvent): void {
       const tag = ((e.target as HTMLElement | null)?.tagName || '').toLowerCase()
       if (tag === 'input' || tag === 'textarea' || tag === 'select') return
-      if (e.code === 'KeyM' && !e.repeat) {
+      if (e.code === 'Space' && !e.repeat) {
         e.preventDefault()
-        toggleMute()
-      } else if (e.code === 'Space' && !e.repeat) {
-        e.preventDefault()
-        wasMutedBeforeSpace.current = voiceMuted
-        toggleMute()
+        startTalking()
       }
     }
     function onKeyUp(e: KeyboardEvent): void {
       if (e.code === 'Space') {
         e.preventDefault()
-        setMicMuted(wasMutedBeforeSpace.current)
+        stopTalking()
       }
     }
     window.addEventListener('keydown', onKeyDown)
@@ -292,16 +287,34 @@ export default function HomePage() {
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
     }
-  }, [voiceActive, voiceMuted])
+  }, [voiceActive])
 
-  async function setMicMuted(value: boolean): Promise<void> {
+  // Begin a push-to-talk turn: cut the model off (audio-flush via direct
+  // source kill — same shape as the speech_started flush) and unmute.
+  function startTalking(): void {
     const s = studio()
     if (!s || !voiceActive) return
-    setVoiceMuted(value)
-    await s.setMuted?.(value)
+    // Kill any model audio that's currently playing locally so the user
+    // doesn't have to wait for it to finish.
+    for (const node of audioSourcesRef.current) {
+      try { node.stop() } catch { /* ignore */ }
+      try { node.disconnect() } catch { /* ignore */ }
+    }
+    audioSourcesRef.current.clear()
+    const ctx = audioCtxRef.current
+    audioNextRef.current = ctx ? ctx.currentTime : 0
+    setVoiceMuted(false)
+    void s.setMuted?.(false)
   }
-  function toggleMute(): void {
-    void setMicMuted(!voiceMuted)
+  // End the turn: re-mute and force the server to commit the input
+  // buffer + create a response immediately (skips the silence_duration_ms
+  // wait — that was the lag the user was seeing).
+  function stopTalking(): void {
+    const s = studio()
+    if (!s || !voiceActive) return
+    setVoiceMuted(true)
+    void s.setMuted?.(true)
+    void s.commitAudio?.()
   }
 
   async function handleVoice(): Promise<void> {
@@ -310,6 +323,12 @@ export default function HomePage() {
     await s.setEditTarget?.(null)
     const r = await s.toggleVoice()
     setVoiceActive(!!r.active)
+    // PTT-first: when the session starts, default the mic to muted so we
+    // only transmit while the user is holding Space (or pressing the orb).
+    if (r.active) {
+      setVoiceMuted(true)
+      await s.setMuted?.(true)
+    }
   }
 
   const lastMsg = chat[chat.length - 1]
@@ -319,10 +338,13 @@ export default function HomePage() {
     lastMsg.speaker === 'user' &&
     pendingModelIdRef.current === null
 
-  const headline = voiceActive ? 'Listening' : 'Ready'
-  const subline = voiceActive
-    ? "Speak naturally · I'll edit your video"
-    : 'Tap the mic to start'
+  const talking = voiceActive && !voiceMuted
+  const headline = !voiceActive ? 'Ready' : talking ? 'Listening' : 'Hold to talk'
+  const subline = !voiceActive
+    ? 'Tap the mic to start'
+    : talking
+      ? "I'm hearing you — release to send"
+      : 'Hold the mic or Space · release to send'
 
   return (
     <div className="relative flex min-h-screen flex-col overflow-hidden bg-[#f5f6f7]">
@@ -495,19 +517,25 @@ export default function HomePage() {
 
               {/* The mic button */}
               <button
-                onClick={handleVoice}
+                onClick={voiceActive ? undefined : handleVoice}
+                onMouseDown={voiceActive ? () => startTalking() : undefined}
+                onMouseUp={voiceActive ? () => stopTalking() : undefined}
+                onMouseLeave={voiceActive && !voiceMuted ? () => stopTalking() : undefined}
+                onTouchStart={voiceActive ? (e) => { e.preventDefault(); startTalking() } : undefined}
+                onTouchEnd={voiceActive ? (e) => { e.preventDefault(); stopTalking() } : undefined}
+                onContextMenu={(e) => e.preventDefault()}
                 disabled={!studio()}
                 className={[
                   'relative inline-flex h-[136px] w-[136px] items-center justify-center rounded-full text-white shadow-2xl',
-                  'transition-all duration-300 ease-spring',
-                  'hover:-translate-y-1 hover:scale-[1.02] active:scale-[0.97]',
+                  'transition-all duration-300 ease-spring select-none',
+                  voiceActive && !voiceMuted ? 'scale-[1.05]' : 'hover:-translate-y-1 hover:scale-[1.02] active:scale-[0.97]',
                   'disabled:cursor-not-allowed disabled:opacity-50'
                 ].join(' ')}
                 style={{
                   background: voiceActive && !voiceMuted
                     ? 'radial-gradient(circle at 35% 25%, #34d399 0%, #16a34a 55%, #15803d 100%)'
-                    : voiceMuted
-                      ? 'radial-gradient(circle at 35% 25%, #fbbf24 0%, #d97706 55%, #b45309 100%)'
+                    : voiceActive
+                      ? 'radial-gradient(circle at 35% 25%, #86efac 0%, #22c55e 55%, #16a34a 100%)'
                       : 'radial-gradient(circle at 35% 25%, #d4d4d8 0%, #71717a 55%, #52525b 100%)',
                   boxShadow: voiceActive && !voiceMuted
                     ? '0 18px 50px -12px rgba(34,197,94,0.55), inset 0 -10px 20px rgba(0,0,0,0.15)'
@@ -517,27 +545,23 @@ export default function HomePage() {
                 aria-label={voiceActive ? 'Stop voice mode' : 'Start voice mode'}
               >
                 {/* Mic icon (or muted slash) */}
-                {voiceMuted ? (
-                  <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="1" y1="1" x2="23" y2="23" />
-                    <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
-                    <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23" />
-                    <line x1="12" y1="19" x2="12" y2="23" />
-                  </svg>
-                ) : (
-                  <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="9" y="2" width="6" height="13" rx="3" />
-                    <path d="M5 11a7 7 0 0 0 14 0" />
-                    <line x1="12" y1="19" x2="12" y2="23" />
-                  </svg>
-                )}
+                <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="9" y="2" width="6" height="13" rx="3" />
+                  <path d="M5 11a7 7 0 0 0 14 0" />
+                  <line x1="12" y1="19" x2="12" y2="23" />
+                </svg>
               </button>
             </div>
 
-            {/* Status pill */}
+            {/* Status pill (also acts as PTT trigger via mouse hold + as stop button on dblclick) */}
             <button
-              onClick={() => voiceActive ? setMicMuted(!voiceMuted) : handleVoice()}
+              onMouseDown={voiceActive ? () => startTalking() : undefined}
+              onMouseUp={voiceActive ? () => stopTalking() : undefined}
+              onMouseLeave={voiceActive && !voiceMuted ? () => stopTalking() : undefined}
+              onClick={voiceActive ? undefined : handleVoice}
+              onDoubleClick={voiceActive ? handleVoice : undefined}
               disabled={!studio()}
+              title={voiceActive ? 'Hold to talk · double-click to end session' : 'Tap to start'}
               className={[
                 'inline-flex items-center gap-2 rounded-full border px-4 py-2 text-[13px] font-semibold',
                 'transition-all duration-200 ease-spring active:scale-95',
@@ -557,12 +581,12 @@ export default function HomePage() {
                   <span className="wave-bar-3 inline-block w-[3px] rounded-sm bg-emerald-500" />
                   <span className="wave-bar-1 inline-block w-[3px] rounded-sm bg-emerald-500" />
                 </span>
-              ) : voiceMuted ? (
-                <span className="text-[15px]">🔇</span>
+              ) : voiceActive ? (
+                <span className="flex h-2 w-2 rounded-full bg-emerald-500" />
               ) : (
                 <span className="flex h-2 w-2 rounded-full bg-neutral-400" />
               )}
-              {voiceActive ? (voiceMuted ? 'Muted · tap to unmute' : 'Listening') : 'Tap to start'}
+              {!voiceActive ? 'Tap to start' : voiceMuted ? 'Hold to talk' : 'Listening'}
             </button>
           </div>
 
@@ -681,7 +705,7 @@ export default function HomePage() {
 
           {voiceActive && (
             <p className="text-[11.5px] text-neutral-400">
-              Press <kbd className="rounded border border-neutral-300 bg-white px-1.5 py-0.5 text-[10px] font-bold text-neutral-600">M</kbd> to mute · hold <kbd className="rounded border border-neutral-300 bg-white px-1.5 py-0.5 text-[10px] font-bold text-neutral-600">Space</kbd> for push-to-talk
+              Hold <kbd className="rounded border border-neutral-300 bg-white px-1.5 py-0.5 text-[10px] font-bold text-neutral-600">Space</kbd> or the mic to talk · double-click pill to end session
             </p>
           )}
           {!studio() && (

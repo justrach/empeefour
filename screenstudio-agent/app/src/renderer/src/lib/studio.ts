@@ -41,6 +41,7 @@ export interface StudioBridge {
   setEditTarget(runName: string | null): Promise<{ ok: boolean; editTarget: string | null }>
   setPlayhead(time: number): Promise<void>
   setMuted(muted: boolean): Promise<{ ok: boolean; muted: boolean }>
+  commitAudio(): Promise<{ ok: boolean }>
   onAudioChunk(cb: (base64Pcm: string) => void): () => void
   onToolFired(cb: (payload: ToolFiredPayload) => void): () => void
   onTranscriptDelta(cb: (payload: TranscriptDeltaPayload) => void): () => void
