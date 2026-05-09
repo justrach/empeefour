@@ -40,6 +40,12 @@ export const EDITOR_SYSTEM_INSTRUCTIONS = [
   "docs/links), call web_search with a concise query. Briefly say 'searching the",
   "web…'. Results land as a system note — verbalize them in 2-3 sentences.",
   "",
+  "For questions about the user's Apple Health data (steps, distance, heart rate,",
+  "weight, sleep, workouts — e.g. 'how many steps last week?', 'what's my heart",
+  "rate trend?', 'summarize my workouts'), call health_data_analysis with a short",
+  "query and the relevant metric. Briefly say 'checking your health data…'. Stats",
+  "land as a system note — verbalize the key numbers naturally in 2-4 sentences.",
+  "",
   "Never fire mark_cut without both start AND end. Never fire mark_caption with",
   "empty text. Don't fire tools on filler ('uh', 'oh', 'one'), background noise,",
   "or non-English Whisper hallucinations like '谢谢观看' / '请订阅'.",
@@ -170,6 +176,25 @@ export const EDITOR_TOOLS = [
       properties: {
         query: { type: "string", description: "Concise search query, 3-12 words." },
         num_results: { type: "number", description: "How many results (default 4, max 8)." },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    type: "function",
+    name: "health_data_analysis",
+    description:
+      "Read the user's pre-exported Apple Health data (CSVs in ~/apple-health/analysis, or the dir set by HEALTH_ANALYSIS_DIR) and return summary stats. Covers steps, distance, heart rate, weight, sleep, and workouts. Use for any question about the user's own activity, fitness, sleep, or vitals (e.g. 'how many steps last week', 'heart rate trend', 'how much did I run this month', 'sleep quality lately'). Stats arrive as a system note for the model to verbalize.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "The user's question, in their words. Used to focus the verbal answer." },
+        metric: {
+          type: "string",
+          enum: ["steps", "distance", "heart_rate", "weight", "sleep", "workouts", "summary"],
+          description: "Which metric to summarize. Use 'summary' for a multi-metric overview when the user asks broadly.",
+        },
+        days: { type: "number", description: "Recent window in days for the 'last N days' average (default 7). Use 30 for monthly questions." },
       },
       required: ["query"],
     },

@@ -170,6 +170,9 @@ async function setVoiceMode(enabled: boolean): Promise<{ active: boolean }> {
     voice.on('audio-flush' as never, () => {
       mainWindow?.webContents.send('voice:audio-flush')
     })
+    voice.on('audio-level' as never, (rms: number) => {
+      mainWindow?.webContents.send('voice:audio-level', rms)
+    })
     voice.on('transcript-done' as never, (payload: { role: 'model' | 'user' }) => {
       mainWindow?.webContents.send('voice:transcript-done', payload)
     })

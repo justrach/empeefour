@@ -8,6 +8,9 @@
 import OpenAI from "openai";
 import { OpenAIRealtimeWS } from "openai/realtime/ws";
 import { EventEmitter } from "node:events";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { screen } from "electron";
 
 import { StudioSession, TimelineEvent, appendEvent, loadActiveSession } from "./studio";
@@ -262,6 +265,17 @@ export class VoiceAgent extends EventEmitter {
     if (!stream) return;
     const chunker = new PcmChunker((chunk) => {
       if (!this.ws || !this.active || this.muted) return;
+      // RMS of the s16le PCM chunk, normalized to 0-1, for the renderer's
+      // audio-reactive orb visualization. Cheap to compute (~2400 samples
+      // per 100ms chunk at 24kHz mono).
+      let sum = 0;
+      const n = chunk.length / 2;
+      for (let i = 0; i < chunk.length; i += 2) {
+        const s = chunk.readInt16LE(i);
+        sum += s * s;
+      }
+      const rms = Math.sqrt(sum / n) / 32768;
+      this.emit("audio-level", rms);
       try {
         this.ws.send(inputAudioAppendEvent(chunk));
         this.audioSentThisTurn = true;

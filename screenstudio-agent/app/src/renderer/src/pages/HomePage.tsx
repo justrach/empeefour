@@ -163,6 +163,7 @@ export default function HomePage() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [chat, setChat] = useState<ChatMsg[]>([])
   const [balloons, setBalloons] = useState<Balloon[]>([])
+  const [audioLevel, setAudioLevel] = useState(0)
   const [tipIdx, setTipIdx] = useState(0)
   const sessionStartedAtRef = useRef<number>(0)
   const audioCtxRef = useRef<AudioContext | null>(null)
@@ -291,6 +292,14 @@ export default function HomePage() {
       audioNextRef.current = ctx ? ctx.currentTime : 0
     })
 
+    // Audio-reactive orb. Smooth raw RMS via exponential moving average
+    // so the orb pulses with the voice instead of jittering.
+    const offLevel = s.onAudioLevel?.((rms) => {
+      // Normalize: typical speech RMS sits around 0.05-0.2; map to 0-1
+      const norm = Math.min(1, rms * 6)
+      setAudioLevel((prev) => prev * 0.55 + norm * 0.45)
+    })
+
     const offTool = s.onToolFired?.((p) => {
       const look = lookForTool(p.name)
       const id = ++balloonSeq
@@ -371,6 +380,7 @@ export default function HomePage() {
       offLog?.()
       offChunk?.()
       offFlush?.()
+      offLevel?.()
       offTool?.()
       offDelta?.()
       offDone?.()
@@ -455,6 +465,16 @@ export default function HomePage() {
       await s.setMuted?.(true)
     }
   }
+
+  // Decay audio level back to 0 when nothing is coming in (PTT released, muted).
+  useEffect(() => {
+    if (audioLevel === 0) return
+    if (!voiceActive || voiceMuted) {
+      const t = setTimeout(() => setAudioLevel((v) => v * 0.6), 80)
+      return () => clearTimeout(t)
+    }
+    return undefined
+  }, [audioLevel, voiceActive, voiceMuted])
 
   const lastMsg = chat[chat.length - 1]
   const showTyping =
@@ -626,12 +646,22 @@ export default function HomePage() {
               {voiceActive && !voiceMuted && (
                 <>
                   <span
-                    className="ripple-1 absolute left-1/2 top-1/2 h-[180px] w-[180px] rounded-full"
-                    style={{ background: 'radial-gradient(circle, rgba(34,197,94,0.18) 30%, rgba(34,197,94,0) 70%)' }}
+                    className="ripple-1 absolute left-1/2 top-1/2 rounded-full"
+                    style={{
+                      width: 180 + audioLevel * 80,
+                      height: 180 + audioLevel * 80,
+                      background: `radial-gradient(circle, rgba(34,197,94,${0.18 + audioLevel * 0.2}) 30%, rgba(34,197,94,0) 70%)`,
+                      transition: 'width 80ms ease-out, height 80ms ease-out'
+                    }}
                   />
                   <span
-                    className="ripple-2 absolute left-1/2 top-1/2 h-[180px] w-[180px] rounded-full"
-                    style={{ background: 'radial-gradient(circle, rgba(34,197,94,0.14) 30%, rgba(34,197,94,0) 70%)' }}
+                    className="ripple-2 absolute left-1/2 top-1/2 rounded-full"
+                    style={{
+                      width: 180 + audioLevel * 60,
+                      height: 180 + audioLevel * 60,
+                      background: `radial-gradient(circle, rgba(34,197,94,${0.14 + audioLevel * 0.16}) 30%, rgba(34,197,94,0) 70%)`,
+                      transition: 'width 80ms ease-out, height 80ms ease-out'
+                    }}
                   />
                   <span
                     className="ripple-3 absolute left-1/2 top-1/2 h-[180px] w-[180px] rounded-full"
@@ -653,7 +683,7 @@ export default function HomePage() {
                 className={[
                   'relative inline-flex h-[136px] w-[136px] items-center justify-center rounded-full text-white shadow-2xl',
                   'transition-all duration-300 ease-spring select-none',
-                  voiceActive && !voiceMuted ? 'scale-[1.05]' : 'hover:-translate-y-1 hover:scale-[1.02] active:scale-[0.97]',
+                  voiceActive && !voiceMuted ? '' : 'hover:-translate-y-1 hover:scale-[1.02] active:scale-[0.97]',
                   'disabled:cursor-not-allowed disabled:opacity-50'
                 ].join(' ')}
                 style={{
@@ -663,8 +693,10 @@ export default function HomePage() {
                       ? 'radial-gradient(circle at 35% 25%, #86efac 0%, #22c55e 55%, #16a34a 100%)'
                       : 'radial-gradient(circle at 35% 25%, #d4d4d8 0%, #71717a 55%, #52525b 100%)',
                   boxShadow: voiceActive && !voiceMuted
-                    ? '0 18px 50px -12px rgba(34,197,94,0.55), inset 0 -10px 20px rgba(0,0,0,0.15)'
-                    : '0 12px 32px -10px rgba(0,0,0,0.35), inset 0 -10px 20px rgba(0,0,0,0.15)'
+                    ? `0 ${18 + audioLevel * 30}px ${50 + audioLevel * 60}px -12px rgba(34,197,94,${0.45 + audioLevel * 0.4}), inset 0 -10px 20px rgba(0,0,0,0.15)`
+                    : '0 12px 32px -10px rgba(0,0,0,0.35), inset 0 -10px 20px rgba(0,0,0,0.15)',
+                  transform: voiceActive && !voiceMuted ? `scale(${1.05 + audioLevel * 0.18})` : undefined,
+                  transition: 'transform 90ms ease-out, box-shadow 120ms ease-out'
                 }}
                 title={voiceActive ? 'Stop' : 'Start voice mode'}
                 aria-label={voiceActive ? 'Stop voice mode' : 'Start voice mode'}

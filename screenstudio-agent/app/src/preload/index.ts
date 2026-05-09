@@ -53,6 +53,13 @@ const studio = {
       ipcRenderer.removeListener('voice:audio-flush', handler)
     }
   },
+  onAudioLevel(cb: (rms: number) => void) {
+    const handler = (_e: unknown, rms: number): void => cb(rms)
+    ipcRenderer.on('voice:audio-level', handler)
+    return (): void => {
+      ipcRenderer.removeListener('voice:audio-level', handler)
+    }
+  },
   onListenLog(cb: (line: string) => void) {
     const handler = (_e: unknown, line: string): void => cb(line)
     ipcRenderer.on('listen:log', handler)
