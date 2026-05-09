@@ -119,7 +119,7 @@ export class VoiceAgent extends EventEmitter {
     const wsAny = ws as unknown as {
       on(event: string, cb: (e: unknown) => void): void;
     };
-    wsAny.on("response.audio.delta", (event) => {
+    wsAny.on("response.output_audio.delta", (event) => {
       const delta = (event as { delta?: string })?.delta;
       if (!delta || !this.speaker?.stdin?.writable) return;
       try {
@@ -130,7 +130,7 @@ export class VoiceAgent extends EventEmitter {
     });
 
     // Show what the model is saying alongside its audio.
-    wsAny.on("response.audio_transcript.done", (event) => {
+    wsAny.on("response.output_audio_transcript.done", (event) => {
       const text = String((event as { transcript?: string })?.transcript || "").trim();
       if (text) this.log("info", `model: ${text}`);
     });
