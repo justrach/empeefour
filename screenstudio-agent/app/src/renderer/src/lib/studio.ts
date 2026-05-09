@@ -26,6 +26,7 @@ export interface StudioBridge {
   getVoiceState(): Promise<VoiceState>
   setEditTarget(runName: string | null): Promise<{ ok: boolean; editTarget: string | null }>
   setPlayhead(time: number): Promise<void>
+  setMuted(muted: boolean): Promise<{ ok: boolean; muted: boolean }>
   onListenLog(cb: (line: string) => void): () => void
   onListenState(cb: (state: VoiceState) => void): () => void
   stats(): Promise<AgentStats>

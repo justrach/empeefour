@@ -13,6 +13,8 @@ const studio = {
     ipcRenderer.invoke('voice:setEditTarget', runName),
   setPlayhead: (time: number): Promise<void> =>
     ipcRenderer.invoke('voice:setPlayhead', time),
+  setMuted: (muted: boolean): Promise<{ ok: boolean; muted: boolean }> =>
+    ipcRenderer.invoke('voice:setMuted', muted),
   onListenLog(cb: (line: string) => void) {
     const handler = (_e: unknown, line: string): void => cb(line)
     ipcRenderer.on('listen:log', handler)

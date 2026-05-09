@@ -45,6 +45,7 @@ export class VoiceAgent extends EventEmitter {
   private ws: OpenAIRealtimeWS | null = null;
   private ffmpeg: ReturnType<typeof spawnMacMicPcm> | null = null;
   private speaker: import("node:child_process").ChildProcess | null = null;
+  private muted = false;
   private session: StudioSession | null = null;
   private runName: string | null = null;
   active = false;
@@ -222,7 +223,7 @@ export class VoiceAgent extends EventEmitter {
     const stream = this.ffmpeg.stdout;
     if (!stream) return;
     const chunker = new PcmChunker((chunk) => {
-      if (!this.ws || !this.active) return;
+      if (!this.ws || !this.active || this.muted) return;
       try {
         this.ws.send(inputAudioAppendEvent(chunk));
       } catch {
@@ -233,6 +234,11 @@ export class VoiceAgent extends EventEmitter {
       chunker.push(chunk);
     });
     stream.on("end", () => this.log("info", "ffmpeg stream ended"));
+  }
+
+  setMuted(value: boolean): void {
+    this.muted = value;
+    this.log("info", value ? "mic muted" : "mic listening");
   }
 
   private async handleToolCall(call: RealtimeToolCall): Promise<void> {

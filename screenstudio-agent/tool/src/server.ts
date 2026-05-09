@@ -25,11 +25,18 @@ function contentType(file: string): string {
   )
 }
 
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Range",
+} as const
+
 function sendJson(res: ServerResponse, data: unknown, status = 200): void {
   const payload = Buffer.from(JSON.stringify(data, null, 2))
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Content-Length": payload.length,
+    ...CORS_HEADERS,
   })
   res.end(payload)
 }
@@ -81,7 +88,7 @@ async function serveStatic(root: string, res: ServerResponse, urlPath: string): 
   const file = path.resolve(webDir, requested)
   const webRoot = path.resolve(webDir)
   if (file !== webRoot && !file.startsWith(webRoot + path.sep)) {
-    res.writeHead(404)
+    res.writeHead(404, CORS_HEADERS)
     res.end()
     return
   }
@@ -93,10 +100,11 @@ async function serveStatic(root: string, res: ServerResponse, urlPath: string): 
       "Cache-Control": "no-cache, no-store, must-revalidate",
       Pragma: "no-cache",
       Expires: "0",
+      ...CORS_HEADERS,
     })
     res.end(payload)
   } catch {
-    res.writeHead(404)
+    res.writeHead(404, CORS_HEADERS)
     res.end()
   }
 }
@@ -110,7 +118,7 @@ async function serveFile(req: IncomingMessage, res: ServerResponse, file: string
     const start = Number(startRaw || 0)
     const end = endRaw ? Math.min(Number(endRaw), size - 1) : size - 1
     if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start >= size) {
-      res.writeHead(416, { "Content-Range": `bytes */${size}` })
+      res.writeHead(416, { "Content-Range": `bytes */${size}`, ...CORS_HEADERS })
       res.end()
       return
     }
@@ -119,6 +127,7 @@ async function serveFile(req: IncomingMessage, res: ServerResponse, file: string
       "Content-Length": end - start + 1,
       "Content-Range": `bytes ${start}-${end}/${size}`,
       "Accept-Ranges": "bytes",
+      ...CORS_HEADERS,
     })
     createReadStream(file, { start, end }).pipe(res)
     return
@@ -127,11 +136,18 @@ async function serveFile(req: IncomingMessage, res: ServerResponse, file: string
     "Content-Type": contentType(file),
     "Content-Length": size,
     "Accept-Ranges": "bytes",
+    ...CORS_HEADERS,
   })
   createReadStream(file).pipe(res)
 }
 
 async function handle(root: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  // Browser preflight (Next.js dev → 127.0.0.1:8765 is cross-origin).
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, { "Content-Length": "0", ...CORS_HEADERS })
+    res.end()
+    return
+  }
   const parsed = new URL(req.url || "/", "http://127.0.0.1")
   const urlPath = parsed.pathname
 

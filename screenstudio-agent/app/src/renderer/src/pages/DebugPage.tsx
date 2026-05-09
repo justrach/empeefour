@@ -50,6 +50,8 @@ export default function DebugPage() {
   const [rendering, setRendering] = useState(false)
   const [renderStatus, setRenderStatus] = useState('')
   const [voiceActive, setVoiceActive] = useState(false)
+  const [voiceMuted, setVoiceMuted] = useState(false)
+  const wasMutedBeforeSpace = useRef(false)
   const [voiceLog, setVoiceLog] = useState<string[]>([])
   const [mediaTick, setMediaTick] = useState(0)
   const videoRef = useRef<HTMLVideoElement | null>(null)
@@ -77,6 +79,35 @@ export default function DebugPage() {
       cancelled = true
     }
   }, [selected])
+
+  // M = toggle mute, Hold-Space = push-to-talk (flip mute while held).
+  useEffect(() => {
+    if (!voiceActive) return
+    function onKeyDown(e: KeyboardEvent) {
+      const tag = ((e.target as HTMLElement | null)?.tagName || '').toLowerCase()
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return
+      if (e.code === 'KeyM' && !e.repeat) {
+        e.preventDefault()
+        setMicMuted(!voiceMuted)
+      } else if (e.code === 'Space' && !e.repeat) {
+        e.preventDefault()
+        wasMutedBeforeSpace.current = voiceMuted
+        setMicMuted(!voiceMuted)
+      }
+    }
+    function onKeyUp(e: KeyboardEvent) {
+      if (e.code === 'Space') {
+        e.preventDefault()
+        setMicMuted(wasMutedBeforeSpace.current)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
+    }
+  }, [voiceActive, voiceMuted])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -119,6 +150,14 @@ export default function DebugPage() {
     if (!s) return
     const r = await s.toggleVoice()
     setVoiceActive(!!r.active)
+    if (!r.active) setVoiceMuted(false)
+  }
+
+  async function setMicMuted(value: boolean): Promise<void> {
+    const s = studio()
+    if (!s || !voiceActive) return
+    setVoiceMuted(value)
+    await s.setMuted?.(value)
   }
 
   const run = runs.find((r) => r.name === selected)
@@ -252,6 +291,21 @@ export default function DebugPage() {
             <span className={voiceActive ? 'animate-pulse' : ''}>●</span>
             {voiceActive ? 'Stop Voice' : 'Voice Edit'}
           </button>
+          {voiceActive && (
+            <button
+              onClick={() => setMicMuted(!voiceMuted)}
+              title="Click or press M. Hold Space for push-to-talk."
+              className={[
+                'inline-flex h-8 items-center gap-1 rounded-md px-3 text-[12px] font-semibold text-white shadow-sm transition',
+                voiceMuted
+                  ? 'bg-amber-500 hover:bg-amber-400'
+                  : 'bg-green hover:opacity-90'
+              ].join(' ')}
+            >
+              <span className={voiceMuted ? '' : 'animate-pulse'}>{voiceMuted ? '🔇' : '🎙'}</span>
+              {voiceMuted ? 'Muted' : 'Listening'}
+            </button>
+          )}
           <button
             onClick={handleRender}
             disabled={!selected || rendering}
