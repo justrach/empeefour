@@ -191,6 +191,9 @@ export interface EditingSessionOptions {
   // When true (default) the assistant speaks back via PCM audio output.
   speakBack?: boolean;
   voice?: string;
+  // When true, disables server VAD — the client controls every turn via
+  // input_audio_buffer.commit + response.create. Use with PTT.
+  pushToTalk?: boolean;
 }
 
 export interface RealtimeToolCall {
@@ -218,13 +221,20 @@ export function buildEditingSessionUpdate(opts: EditingSessionOptions = {}): Ses
       input: {
         format: { type: "audio/pcm", rate: opts.sampleRate ?? REALTIME_AUDIO.sampleRate },
         transcription: { model: opts.transcriptionModel ?? "whisper-1" },
-        turn_detection: {
-          type: "server_vad",
-          threshold: vad.threshold ?? 0.5,
-          silence_duration_ms: vad.silenceDurationMs ?? 600,
-          create_response: vad.createResponse ?? true,
-          interrupt_response: vad.interruptResponse ?? true,
-        },
+        // Push-to-talk mode disables server VAD entirely. Without this, the
+        // server auto-commits the input buffer ~600ms after silence and our
+        // manual commit on PTT-release races, causing
+        // INPUT_AUDIO_BUFFER_COMMIT_EMPTY errors. We control all turn
+        // boundaries client-side via input_audio_buffer.commit + response.create.
+        turn_detection: opts.pushToTalk
+          ? null
+          : {
+              type: "server_vad",
+              threshold: vad.threshold ?? 0.5,
+              silence_duration_ms: vad.silenceDurationMs ?? 600,
+              create_response: vad.createResponse ?? true,
+              interrupt_response: vad.interruptResponse ?? true,
+            },
       },
       ...(speakBack
         ? {

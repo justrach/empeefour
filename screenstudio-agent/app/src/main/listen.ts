@@ -47,6 +47,7 @@ export class VoiceAgent extends EventEmitter {
   private ws: OpenAIRealtimeWS | null = null;
   private ffmpeg: ReturnType<typeof spawnMacMicPcm> | null = null;
   private muted = false;
+  private audioSentThisTurn = false;
   private turnTranscript = "";
   private turnLogged = false;
   // Track whether the server has an active response. response.create
@@ -93,7 +94,7 @@ export class VoiceAgent extends EventEmitter {
     this.ws = ws;
 
     ws.socket.on("open", () => {
-      ws.send(buildEditingSessionUpdate());
+      ws.send(buildEditingSessionUpdate({ pushToTalk: true }));
       if (this.opts.speakBack !== false) {
         this.log("info", "voice-back on — audio routes to renderer");
       }
@@ -263,6 +264,7 @@ export class VoiceAgent extends EventEmitter {
       if (!this.ws || !this.active || this.muted) return;
       try {
         this.ws.send(inputAudioAppendEvent(chunk));
+        this.audioSentThisTurn = true;
       } catch {
         chunker.clear();
       }
@@ -278,14 +280,21 @@ export class VoiceAgent extends EventEmitter {
     this.log("info", value ? "mic muted" : "mic listening");
   }
 
-  // Force the server to commit whatever audio it has buffered and (with
-  // create_response:true) immediately fire a response, instead of waiting
-  // out the full silence_duration_ms after the user lets go of PTT.
-  // Cuts ~600ms of dead air per turn.
+  // Push-to-talk mode disables server VAD, so we explicitly commit the
+  // input audio buffer + ask the model for a response when the user
+  // releases the button. Skip if no audio was sent (e.g. user tapped too
+  // fast to flush a 100ms chunk) — committing an empty buffer 422s.
   commitInputAudio(): void {
     if (!this.ws) return;
+    if (!this.audioSentThisTurn) {
+      this.log("info", "PTT release: no audio sent, skipping commit");
+      return;
+    }
+    this.audioSentThisTurn = false;
     try {
-      (this.ws as unknown as { send(e: unknown): void }).send({ type: "input_audio_buffer.commit" });
+      const wsAny = this.ws as unknown as { send(e: unknown): void };
+      wsAny.send({ type: "input_audio_buffer.commit" });
+      this.requestResponseCreate();
     } catch (err) {
       this.log("error", `commit failed: ${err instanceof Error ? err.message : String(err)}`);
     }
