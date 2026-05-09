@@ -12,6 +12,7 @@ import { screen } from "electron";
 
 import { StudioSession, TimelineEvent, appendEvent, loadActiveSession } from "./studio";
 import * as db from "./db";
+import { getAgent, isConfigured as isCursorConfigured } from "./agent";
 import { scheduleRefine } from "./refine";
 import {
   PcmChunker,
@@ -333,6 +334,26 @@ export class VoiceAgent extends EventEmitter {
           };
           break;
         }
+        case "delegate_to_cursor": {
+          const task = String(args.task || "").trim();
+          if (!task) {
+            this.log("error", "delegate_to_cursor: empty task");
+            callRecord("skipped", null, "empty task");
+            return;
+          }
+          if (!isCursorConfigured()) {
+            this.log("error", "delegate_to_cursor: CURSOR_API_KEY not set");
+            callRecord("error", null, "no cursor key");
+            // Tell the model so it can apologize verbally.
+            this.sendSystemNote(`Cursor agent unavailable: CURSOR_API_KEY missing.`);
+            return;
+          }
+          this.log("info", `delegating to cursor: ${task}`);
+          callRecord("ok", null);
+          // Fire-and-forget; report back via system message when done.
+          void this.runCursorTask(task);
+          return;
+        }
         default:
           this.log("error", `unknown tool: ${name}`);
           callRecord("error", null, "unknown tool");
@@ -354,6 +375,42 @@ export class VoiceAgent extends EventEmitter {
       const message = err instanceof Error ? err.message : String(err);
       this.log("error", message);
       callRecord("error", event, message);
+    }
+  }
+
+
+  private sendSystemNote(text: string): void {
+    if (!this.ws) return;
+    try {
+      const wsAny = this.ws as unknown as { send(e: unknown): void };
+      // Inject a system message into the conversation so the next response
+      // can include it. Then ask the model to respond.
+      wsAny.send({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "system",
+          content: [{ type: "input_text", text }],
+        },
+      });
+      wsAny.send({ type: "response.create" });
+    } catch (err) {
+      this.log("error", `sendSystemNote failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private async runCursorTask(task: string): Promise<void> {
+    try {
+      const agent = await getAgent();
+      const run = await agent.send(task);
+      const result = await run.wait();
+      const summary = (result.result || `${result.status}`).slice(0, 600);
+      this.log("info", `cursor done: ${summary}`);
+      this.sendSystemNote(`The coding agent finished: ${summary}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log("error", `cursor failed: ${msg}`);
+      this.sendSystemNote(`The coding agent failed: ${msg}`);
     }
   }
 

@@ -38,6 +38,10 @@ export const EDITOR_SYSTEM_INSTRUCTIONS = [
   "",
   "Never fire mark_cut without both start AND end. Never fire mark_caption with",
   "empty text.",
+  "",
+  "For ANYTHING ELSE the user asks (rendering, opening files, installing packages,",
+  "answering project questions, multi-step edits) call delegate_to_cursor with a",
+  "plain-English task. The user can keep talking while it runs.",
 ].join("\n");
 
 export const EDITOR_TOOLS = [
@@ -120,6 +124,22 @@ export const EDITOR_TOOLS = [
         label: { type: "string", description: "Optional reason, e.g. 'dead air'" },
       },
       required: ["start", "end"],
+    },
+  },
+  {
+    type: "function",
+    name: "delegate_to_cursor",
+    description:
+      "Hand a complex multi-step task to the Cursor coding agent (composer-2) — which has Bash, Read, Edit, Grep tools over the project. Use for things that involve files, shell commands, multi-step edits, or anything beyond a single mark. The user can keep talking while the agent works; you'll be told the result async. Examples: 'render the smoke take and tell me how long it took', 'find all takes with no events and delete them', 'install ffmpeg-static and add it to package.json'.",
+    parameters: {
+      type: "object",
+      properties: {
+        task: {
+          type: "string",
+          description: "Plain-English task description for the coding agent. Include any file paths or context the user mentioned.",
+        },
+      },
+      required: ["task"],
     },
   },
   {
