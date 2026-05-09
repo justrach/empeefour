@@ -49,6 +49,11 @@ export class VoiceAgent extends EventEmitter {
   private muted = false;
   private turnTranscript = "";
   private turnLogged = false;
+  // Track whether the server has an active response. response.create
+  // while one is active errors with "Conversation already has an active
+  // response in progress". So we queue triggers and drain on response.done.
+  private responseActive = false;
+  private responseTriggerPending = false;
   private session: StudioSession | null = null;
   private runName: string | null = null;
   active = false;
@@ -167,6 +172,7 @@ export class VoiceAgent extends EventEmitter {
     // bouncing back through the speakers and INTERRUPTS the model — the
     // response can be cut short and we lose the rest of the reply.
     ws.on("response.created", () => {
+      this.responseActive = true;
       this.turnTranscript = "";
       this.turnLogged = false;
     });
@@ -187,9 +193,18 @@ export class VoiceAgent extends EventEmitter {
       if (!this.turnLogged && this.turnTranscript.trim()) {
         this.log("info", `model: ${this.turnTranscript.trim()}`);
         this.turnLogged = true;
-        // Make sure a transcript-done fires too so any pending streaming
-        // bubble in the renderer flips out of pending state.
         this.emit("transcript-done", { role: "model" });
+      }
+      this.responseActive = false;
+      // Drain any queued response.create — async tool results that landed
+      // while a response was active.
+      if (this.responseTriggerPending) {
+        this.responseTriggerPending = false;
+        try {
+          (this.ws as unknown as { send(e: unknown): void }).send(responseCreateEvent());
+        } catch (err) {
+          this.log("error", `queued response.create failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
     });
 
@@ -258,12 +273,33 @@ export class VoiceAgent extends EventEmitter {
     if (!this.ws) return;
     try {
       const wsAny = this.ws as unknown as { send(e: unknown): void };
+      // function_call_output can be added to conversation history at any
+      // time — even mid-response — without erroring. It just sits there
+      // until the next response uses it.
       wsAny.send(functionCallOutputEvent(callId, output));
-      if (triggerResponse) wsAny.send(responseCreateEvent());
+      if (triggerResponse) this.requestResponseCreate();
     } catch (err) {
       this.log(
         "error",
         `sendToolOutput failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  // Send response.create now if no response is active, otherwise queue
+  // until the next response.done.
+  private requestResponseCreate(): void {
+    if (!this.ws) return;
+    if (this.responseActive) {
+      this.responseTriggerPending = true;
+      return;
+    }
+    try {
+      (this.ws as unknown as { send(e: unknown): void }).send(responseCreateEvent());
+    } catch (err) {
+      this.log(
+        "error",
+        `response.create failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
@@ -436,7 +472,7 @@ export class VoiceAgent extends EventEmitter {
           // Ack the tool call so the conversation thread doesn't break.
           // The actual result lands later via sendSystemNote when the
           // Cursor run finishes.
-          this.sendToolOutput(call.callId, { status: "running", task }, false);
+          this.sendToolOutput(call.callId, { status: "running", task }, true);
           void this.runCursorTask(task);
           return;
         }
@@ -451,7 +487,7 @@ export class VoiceAgent extends EventEmitter {
           const numResults = Math.min(8, Math.max(1, numOr(args.num_results, 4)));
           this.log("info", `web search: ${query}`);
           callRecord("ok", null);
-          this.sendToolOutput(call.callId, { status: "searching", query }, false);
+          this.sendToolOutput(call.callId, { status: "searching", query }, true);
           void this.runWebSearch(query, numResults);
           return;
         }
@@ -490,8 +526,6 @@ export class VoiceAgent extends EventEmitter {
     if (!this.ws) return;
     try {
       const wsAny = this.ws as unknown as { send(e: unknown): void };
-      // Inject a system message into the conversation so the next response
-      // can include it. Then ask the model to respond.
       wsAny.send({
         type: "conversation.item.create",
         item: {
@@ -500,7 +534,7 @@ export class VoiceAgent extends EventEmitter {
           content: [{ type: "input_text", text }],
         },
       });
-      wsAny.send({ type: "response.create" });
+      this.requestResponseCreate();
     } catch (err) {
       this.log("error", `sendSystemNote failed: ${err instanceof Error ? err.message : String(err)}`);
     }
