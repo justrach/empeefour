@@ -27,7 +27,7 @@ const DB_PATH = path.join(ROOT, "runs", "agentic-video.db");
 dotenv.config({ path: path.join(ROOT, ".env") });
 
 interface Args {
-  video: string;
+  videos: string[];
   prompt: string;
   name?: string;
 }
@@ -35,24 +35,32 @@ interface Args {
 function parse(): Args {
   const { values } = parseArgs({
     options: {
-      video: { type: "string", short: "v" },
+      video: { type: "string", short: "v", multiple: true },
       prompt: { type: "string", short: "p" },
       name: { type: "string", short: "n" },
     },
     strict: true,
   });
-  if (!values.video) throw new Error("--video <path> required");
+  const videosRaw = values.video as string[] | undefined;
+  if (!videosRaw || videosRaw.length === 0) throw new Error("--video <path> required (repeat for multiple)");
   if (!values.prompt) throw new Error("--prompt <text> required");
   return {
-    video: path.resolve(values.video),
-    prompt: values.prompt,
-    name: values.name,
+    videos: videosRaw.map((v) => path.resolve(v)),
+    prompt: values.prompt as string,
+    name: values.name as string | undefined,
   };
 }
 
 function shortHash(s: string): string {
   return crypto.createHash("sha1").update(s).digest("hex").slice(0, 8);
 }
+
+// Prefer ffmpeg-full (libass + freetype) when available — keg-only on
+// macOS so it doesn't sit on PATH by default.
+const FFMPEG_FULL = "/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg";
+const FFPROBE_FULL = "/opt/homebrew/opt/ffmpeg-full/bin/ffprobe";
+const FFMPEG = fs.existsSync(FFMPEG_FULL) ? FFMPEG_FULL : "ffmpeg";
+const FFPROBE = fs.existsSync(FFPROBE_FULL) ? FFPROBE_FULL : "ffprobe";
 
 function shellOk(cmd: string, args: string[]): void {
   const r = spawnSync(cmd, args, { stdio: "inherit" });
@@ -73,7 +81,7 @@ interface VideoMeta {
 }
 
 function probeVideo(filePath: string): VideoMeta {
-  const out = shellOut("ffprobe", [
+  const out = shellOut(FFPROBE, [
     "-v", "error",
     "-show_entries", "format=duration",
     "-show_entries", "stream=codec_type,width,height",
@@ -92,17 +100,52 @@ function probeVideo(filePath: string): VideoMeta {
     has_audio: j.streams.some((s) => s.codec_type === "audio"),
   };
 }
-
-function ensureRaw(srcVideo: string, rawPath: string): void {
+function ensureRaw(srcVideos: string[], rawPath: string): void {
   if (fs.existsSync(rawPath)) return;
-  console.log("→ linking raw video into run dir");
-  fs.symlinkSync(srcVideo, rawPath);
+  if (srcVideos.length === 1) {
+    console.log("→ linking raw video into run dir");
+    fs.symlinkSync(srcVideos[0], rawPath);
+    return;
+  }
+  console.log(`→ stitching ${srcVideos.length} videos with ffmpeg concat (normalized to 1080x1920)`);
+  const inputs: string[] = [];
+  for (const v of srcVideos) {
+    inputs.push("-i", v);
+  }
+  const N = srcVideos.length;
+  // Each input: scale-and-pad to 1080x1920 (TikTok native), force SAR=1,
+  // resample audio to 48kHz stereo for clean concat.
+  const perInput = srcVideos
+    .map(
+      (_, i) =>
+        `[${i}:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v${i}];` +
+        `[${i}:a]aresample=48000,aformat=channel_layouts=stereo[a${i}];`,
+    )
+    .join("");
+  const concatInputs = srcVideos.map((_, i) => `[v${i}][a${i}]`).join("");
+  const filter = perInput + `${concatInputs}concat=n=${N}:v=1:a=1[v][a]`;
+  shellOk(FFMPEG, [
+    "-y", "-hide_banner", "-loglevel", "error", "-stats",
+    ...inputs,
+    "-filter_complex", filter,
+    "-map", "[v]", "-map", "[a]",
+    "-c:v", "libx264", "-crf", "20", "-preset", "fast", "-pix_fmt", "yuv420p",
+    "-c:a", "aac", "-b:a", "192k",
+    "-movflags", "+faststart",
+    rawPath,
+  ]);
+}
+
+function combinedKey(srcVideos: string[]): string {
+  if (srcVideos.length === 1) return db.sha1FileSync(srcVideos[0]);
+  const parts = srcVideos.map(db.sha1FileSync);
+  return crypto.createHash("sha1").update(parts.join("\n")).digest("hex");
 }
 
 function ensureAudio(rawPath: string, audioPath: string): void {
   if (fs.existsSync(audioPath)) return;
   console.log("→ extracting audio");
-  shellOk("ffmpeg", [
+  shellOk(FFMPEG, [
     "-y", "-hide_banner", "-loglevel", "error",
     "-i", rawPath, "-vn",
     "-ac", "1", "-ar", "16000", "-b:a", "32k",
@@ -206,7 +249,10 @@ function readJsonOrNull(p: string): string | null {
 
 async function main(): Promise<void> {
   const args = parse();
-  const runName = args.name ?? `take-${shortHash(args.video)}-${Date.now()}`;
+  const tag = args.videos.length === 1
+    ? shortHash(args.videos[0])
+    : `${args.videos.length}clip-${shortHash(args.videos.join("|"))}`;
+  const runName = args.name ?? `take-${tag}-${Date.now()}`;
   const runDir = path.join(ROOT, "runs", runName);
   fs.mkdirSync(runDir, { recursive: true });
 
@@ -216,20 +262,24 @@ async function main(): Promise<void> {
   const audio = path.join(runDir, "audio.mp3");
   const transcript = path.join(runDir, "transcript.json");
 
-  ensureRaw(args.video, raw);
+  ensureRaw(args.videos, raw);
 
   console.log("→ hashing source");
-  const sha1 = db.sha1FileSync(args.video);
-  const meta = probeVideo(args.video);
+  const sha1 = combinedKey(args.videos);
+  // Probe whichever raw.mp4 exists at this point (symlink for single,
+  // re-encoded file for multi). For single-source, source_path is the
+  // original file; for multi, list them joined.
+  const probeTarget = args.videos.length === 1 ? args.videos[0] : raw;
+  const meta = probeVideo(probeTarget);
   db.upsertVideo(conn, {
     sha1,
-    source_path: args.video,
+    source_path: args.videos.length === 1 ? args.videos[0] : args.videos.join("|"),
     duration_s: meta.duration_s,
     width: meta.width,
     height: meta.height,
     has_audio: meta.has_audio ? 1 : 0,
   });
-  console.log(`  ${sha1.slice(0, 12)}…  ${meta.width}x${meta.height}  ${meta.duration_s.toFixed(1)}s  audio=${meta.has_audio}`);
+  console.log(`  ${sha1.slice(0, 12)}…  ${meta.width}x${meta.height}  ${meta.duration_s.toFixed(1)}s  audio=${meta.has_audio}  sources=${args.videos.length}`);
 
   if (meta.has_audio) ensureAudio(raw, audio);
   await ensureTranscript(conn, sha1, audio, transcript, meta.has_audio);
@@ -249,27 +299,67 @@ async function main(): Promise<void> {
   const t0 = Date.now();
   let status = "error";
   let summary: string | null = null;
+
+  // Streaming log: every SDK event lands as one JSON per line in
+  // runs/<name>/agent.jsonl. Replayable later.
+  const logPath = path.join(runDir, "agent.jsonl");
+  const logFd = fs.openSync(logPath, "w");
+  const writeLog = (event: unknown): void => {
+    fs.writeSync(logFd, JSON.stringify({ t: Date.now() - t0, event }) + "\n");
+  };
+
   try {
-    const result = await Agent.prompt(promptText, {
+    const agent = await Agent.create({
       apiKey: process.env.CURSOR_API_KEY,
       model: { id: model },
       local: { cwd: ROOT },
     });
+    const agentRun = await agent.send(promptText);
+
+    let toolCount = 0;
+    let textBuf = "";
+    for await (const event of agentRun.stream()) {
+      writeLog(event);
+      // Best-effort live console signal — schemas vary across event
+      // shapes, so we prod the well-known fields and shrug if absent.
+      const e = event as unknown as Record<string, unknown>;
+      const type = String(e.type ?? "");
+      if (type.includes("tool_call") || type.endsWith("tool_use")) {
+        toolCount++;
+        const tool = (e.tool_name ?? e.name ?? e.tool) as string | undefined;
+        if (tool) process.stdout.write(`\n  [${toolCount}] ${tool}`);
+      } else if (type.includes("text") || type.includes("delta")) {
+        const delta = (e.delta ?? e.text ?? "") as string;
+        if (typeof delta === "string" && delta.length > 0) {
+          textBuf += delta;
+          if (textBuf.length > 80) {
+            process.stdout.write(".");
+            textBuf = "";
+          }
+        }
+      }
+    }
+
+    const result = await agentRun.wait();
     status = result.status;
     summary = result.result ?? null;
+    writeLog({ type: "_final", status: result.status, durationMs: result.durationMs });
     const dt = ((Date.now() - t0) / 1000).toFixed(1);
-    console.log(`\n--- agent ${status} in ${dt}s ---\n`);
+    console.log(`\n\n--- agent ${status} in ${dt}s, ${toolCount} tool calls, log → ${path.relative(ROOT, logPath)} ---\n`);
     if (summary) console.log(summary + "\n");
   } catch (e: unknown) {
     summary = (e as Error).message;
+    writeLog({ type: "_error", message: summary });
     console.error(`agent threw: ${summary}`);
+  } finally {
+    try { fs.closeSync(logFd); } catch { /* ignore */ }
   }
 
   const finalPath = path.join(runDir, "final.mp4");
   let finalDuration: number | null = null;
   if (fs.existsSync(finalPath)) {
     try {
-      finalDuration = parseFloat(shellOut("ffprobe", [
+      finalDuration = parseFloat(shellOut(FFPROBE, [
         "-v", "error",
         "-show_entries", "format=duration",
         "-of", "default=noprint_wrappers=1:nokey=1",

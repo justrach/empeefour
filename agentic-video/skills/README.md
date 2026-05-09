@@ -9,7 +9,8 @@ prior runs.
 | Folder | When to use |
 |---|---|
 | [`transcribe/`](transcribe/SKILL.md) | Get word-level timestamps from a video before any cut. |
-| [`cut-shortform/`](cut-shortform/SKILL.md) | Build a 30-90s clip from a longer interview using a transcript. |
+| [`cut-shortform/`](cut-shortform/SKILL.md) | Build a 30-90s clip from a longer interview using a transcript. Supports an optional `tail` to append source after the hook. |
+| [`tiktok-captions/`](tiktok-captions/SKILL.md) | Burn word-grouped captions over a video using whisper word timestamps + ASS subtitles. TikTok/Reels style. |
 | [`overlay-music/`](overlay-music/SKILL.md) | Score the cut: pick a track from `library/music/`, duck under dialogue, render the mix. |
 | [`render-final/`](render-final/SKILL.md) | Encoder settings, filter graph patterns, validation. |
 | [`music-creation/`](music-creation/) | Generate or remix custom music from stems. Four detailed recipes. Heavy — only when the user explicitly asks for original music, not for picking from the library. |
