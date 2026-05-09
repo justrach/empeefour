@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Studio Agent</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="mark"></div>
+          <div>
+            <h1>Studio Agent</h1>
+            <p>Runs</p>
+          </div>
+        </div>
+        <section class="side-panel">
+          <div class="panel-title">
+            <h3>Recorder</h3>
+            <span id="record-status">Idle</span>
+          </div>
+          <div id="voice-hero" class="voice-hero" hidden>
+            <button id="voice-toggle" class="voice-button">
+              <span class="voice-button-mic">●</span>
+              <span class="voice-button-label">Start Voice Mode</span>
+            </button>
+            <p class="voice-hint">
+              Say <em>"zoom here"</em>, <em>"cut from 5 to 8"</em>, or <em>"caption this as Open settings"</em>.
+            </p>
+          </div>
+          <div id="voice-log" class="voice-log" hidden></div>
+          <details id="manual-controls" open>
+            <summary>Recording controls</summary>
+            <label>
+              Name
+              <input id="record-name" type="text" placeholder="take-name" />
+            </label>
+            <div class="two-col">
+              <label>
+                Duration
+                <input id="record-duration" type="number" min="1" step="1" value="14" />
+              </label>
+              <label>
+                Display
+                <input id="record-display" type="number" min="1" step="1" value="1" />
+              </label>
+            </div>
+            <div class="checks">
+              <label><input id="record-cursor" type="checkbox" checked /> Cursor</label>
+              <label><input id="record-clicks" type="checkbox" checked /> Clicks</label>
+              <label><input id="record-audio" type="checkbox" /> Audio</label>
+            </div>
+            <div class="button-row">
+              <button id="start-record" class="accent">Start</button>
+              <button id="stop-record">Stop</button>
+            </div>
+          </details>
+          <div id="agent-stats" class="agent-stats" hidden></div>
+        </section>
+        <button id="refresh" class="primary">Refresh</button>
+        <div id="runs" class="runs"></div>
+      </aside>
+
+      <section class="workspace">
+        <header class="topbar">
+          <div>
+            <h2 id="run-title">No run selected</h2>
+            <p id="run-meta">Record a take, then edit its events here.</p>
+          </div>
+          <div class="actions">
+            <button id="save" class="primary">Save</button>
+          </div>
+        </header>
+
+        <section class="preview-panel">
+          <div class="preview-copy">
+            <h3>Rendered Video</h3>
+            <p id="video-status">Select a run with a final render.</p>
+          </div>
+          <video id="preview-video" controls playsinline></video>
+          <div class="media-links">
+            <a id="final-link" href="#" target="_blank" rel="noreferrer">Final MP4</a>
+            <a id="raw-link" href="#" target="_blank" rel="noreferrer">Raw MOV</a>
+          </div>
+        </section>
+
+        <div class="grid">
+          <section class="panel timeline-panel">
+            <div class="panel-head">
+              <h3>Timeline</h3>
+              <span id="event-count">0 events</span>
+            </div>
+            <div id="timeline-strip" class="timeline-strip">
+              <div class="strip-toolbar">
+                <span class="strip-toolbar-label">Add at playhead</span>
+                <button data-add="zoom" class="quick-add" title="Zoom"><span class="quick-icon zoom">+</span>Zoom</button>
+                <button data-add="click" class="quick-add" title="Click"><span class="quick-icon click">●</span>Click</button>
+                <button data-add="caption" class="quick-add" title="Caption"><span class="quick-icon caption">T</span>Caption</button>
+                <button data-add="speed" class="quick-add" title="Speed"><span class="quick-icon speed">»</span>Speed</button>
+                <button data-add="cut" class="quick-add" title="Cut"><span class="quick-icon cut">✕</span>Cut</button>
+                <button data-add="marker" class="quick-add" title="Marker"><span class="quick-icon marker">▼</span>Mark</button>
+              </div>
+              <div class="strip-body">
+                <div class="strip-headers">
+                  <div class="header-spacer"></div>
+                  <div class="lane-header"><span class="lane-icon">T</span><span class="lane-name">Captions</span></div>
+                  <div class="lane-header"><span class="lane-icon">●</span><span class="lane-name">Marks</span></div>
+                  <div class="lane-header"><span class="lane-icon">»</span><span class="lane-name">Spans</span></div>
+                </div>
+                <div class="strip-tracks" id="strip-tracks">
+                  <div class="strip-ruler" id="strip-ruler"></div>
+                  <div class="lane-track" id="lane-caption" data-lane="caption"></div>
+                  <div class="lane-track" id="lane-mark" data-lane="mark"></div>
+                  <div class="lane-track" id="lane-span" data-lane="span"></div>
+                  <div class="strip-cursor" id="strip-cursor" hidden>
+                    <div class="strip-cursor-handle" id="strip-cursor-handle" title="Drag to scrub"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div id="timeline" class="timeline"></div>
+          </section>
+
+          <section class="panel inspector">
+            <div class="panel-head">
+              <h3>JSON</h3>
+              <span id="status">Idle</span>
+            </div>
+            <textarea id="json-editor" spellcheck="false"></textarea>
+          </section>
+        </div>
+
+        <section class="tools-panel">
+          <section class="tool-card">
+            <div class="panel-title">
+              <h3>Add Event</h3>
+              <button id="use-video-time">Use Video Time</button>
+            </div>
+            <div class="event-form">
+              <label>
+                Type
+                <select id="event-type">
+                  <option value="zoom">Zoom</option>
+                  <option value="click">Click</option>
+                  <option value="speed">Speed</option>
+                  <option value="caption">Caption</option>
+                  <option value="marker">Marker</option>
+                </select>
+              </label>
+              <label>
+                Time
+                <input id="event-time" type="number" min="0" step="0.1" value="1" />
+              </label>
+              <label>
+                X
+                <input id="event-x" type="number" step="1" value="900" />
+              </label>
+              <label>
+                Y
+                <input id="event-y" type="number" step="1" value="520" />
+              </label>
+              <label>
+                Scale
+                <input id="event-scale" type="number" min="1" step="0.05" value="1.35" />
+              </label>
+              <label>
+                Duration
+                <input id="event-duration" type="number" min="0.1" step="0.1" value="1.5" />
+              </label>
+              <label>
+                Start
+                <input id="event-start" type="number" min="0" step="0.1" value="8" />
+              </label>
+              <label>
+                End
+                <input id="event-end" type="number" min="0" step="0.1" value="12" />
+              </label>
+              <label>
+                Speed
+                <input id="event-factor" type="number" min="0.1" step="0.1" value="2.5" />
+              </label>
+              <label class="wide">
+                Label / Text
+                <input id="event-label" type="text" placeholder="What happens here" />
+              </label>
+              <button id="add-event" class="primary wide">Add Event</button>
+            </div>
+          </section>
+
+          <section class="tool-card">
+            <div class="panel-title">
+              <h3>Render</h3>
+              <span id="render-status">Ready</span>
+            </div>
+            <div class="render-form">
+              <label>
+                Canvas
+                <input id="render-canvas" type="text" value="1920x1080" />
+              </label>
+              <label>
+                Quality
+                <input id="render-crf" type="number" min="0" max="51" step="1" value="18" />
+              </label>
+              <label>
+                Preset
+                <select id="render-preset">
+                  <option value="veryfast">Very fast</option>
+                  <option value="medium">Medium</option>
+                  <option value="slow">Slow</option>
+                </select>
+              </label>
+              <label>
+                Background
+                <input id="render-background" type="text" value="#f3f0ea" />
+              </label>
+              <button id="render" class="accent wide">Render Final</button>
+            </div>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

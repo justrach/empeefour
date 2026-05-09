@@ -1,0 +1,15 @@
+[project]
+name = "screenstudio-agent"
+version = "0.1.0"
+description = "Agentic macOS screen recorder and ffmpeg renderer with Screen Studio-style zoom events."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+studio-agent = "studio_agent.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["studio_agent*"]
+
+[tool.ruff]
+line-length = 100

@@ -1,0 +1,19 @@
+{
+  "name": "screenstudio-agent-tool",
+  "version": "0.1.0",
+  "description": "TypeScript-native local engine for screenstudio-agent.",
+  "type": "module",
+  "bin": {
+    "studio-agent-ts": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/cli.js",
+    "dev": "tsx src/cli.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.1",
+    "typescript": "^5.9.3",
+    "tsx": "^4.20.6"
+  }
+}

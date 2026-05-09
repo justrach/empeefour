@@ -1,0 +1,39 @@
+{
+  "name": "browser-demo",
+  "record": {
+    "audio": false,
+    "cursor": true,
+    "show_clicks": true
+  },
+  "render": {
+    "enabled": true,
+    "output": "final.mp4",
+    "canvas": "1920x1080",
+    "background": "#f3f0ea",
+    "crf": 18,
+    "preset": "medium"
+  },
+  "actions": [
+    {
+      "type": "open_url",
+      "url": "https://example.com",
+      "after": 1.5
+    },
+    {
+      "type": "zoom",
+      "x": 640,
+      "y": 360,
+      "scale": 1.35,
+      "duration": 1.4,
+      "label": "Focus the page",
+      "after": 0.8
+    },
+    {
+      "type": "caption",
+      "text": "Agentic recording with editable events",
+      "duration": 2.2,
+      "position": "bottom",
+      "after": 2.0
+    }
+  ]
+}

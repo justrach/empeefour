@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Studio Agent</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="home">
+    <header class="home-topbar">
+      <div class="home-brand">
+        <span class="home-brand-mark"></span>
+        <span>Studio Agent</span>
+      </div>
+      <a href="/debug" class="home-debug-link">Advanced editor →</a>
+    </header>
+
+    <main class="home-main">
+      <section class="home-hero">
+        <h1>Talk and the agent edits your demo.</h1>
+        <p class="home-tagline">Record your screen, say what you want, watch the cuts happen.</p>
+        <div class="home-cta">
+          <button id="home-voice" class="home-voice-btn">
+            <span class="home-voice-mic">●</span>
+            <span class="home-voice-label">Start Voice Mode</span>
+          </button>
+          <p class="home-hint" id="home-hint">Press <kbd>Space</kbd> to play a take, click one to keep editing.</p>
+        </div>
+      </section>
+
+      <section class="home-runs">
+        <header class="home-runs-head">
+          <h2>Recent takes</h2>
+          <span id="home-runs-count" class="home-muted">—</span>
+        </header>
+        <div id="home-runs-grid" class="home-runs-grid"></div>
+      </section>
+    </main>
+
+    <script src="/home.js"></script>
+  </body>
+</html>

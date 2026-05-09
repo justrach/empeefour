@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "recording": {
+    "started_at": "smoke",
+    "start_epoch": 0,
+    "raw_video": "runs/smoke/raw.mov"
+  },
+  "events": [
+    {
+      "type": "click",
+      "time": 0.8,
+      "x": 360,
+      "y": 250,
+      "scale": 1.45,
+      "duration": 1.2,
+      "lead": 0.2,
+      "zoom": true
+    },
+    {
+      "type": "zoom",
+      "time": 2.0,
+      "x": 940,
+      "y": 420,
+      "scale": 1.35,
+      "duration": 1.0,
+      "lead": 0.2
+    },
+    {
+      "type": "caption",
+      "time": 1.2,
+      "text": "Timeline render smoke test",
+      "duration": 1.3,
+      "position": "bottom"
+    }
+  ]
+}

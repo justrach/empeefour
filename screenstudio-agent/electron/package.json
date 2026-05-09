@@ -1,0 +1,24 @@
+{
+  "name": "screenstudio-agent-desktop",
+  "version": "0.2.0",
+  "description": "Electron + TS shell for screenstudio-agent: voice-driven screen recorder.",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "tsc && electron dist/main.js",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "@cursor/sdk": "^1.0.12",
+    "better-sqlite3": "^11.10.0",
+    "dotenv": "^16.4.5",
+    "openai": "^6.37.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.0.4",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.0.0",
+    "electron": "^32.0.0",
+    "typescript": "^5.4.0"
+  }
+}

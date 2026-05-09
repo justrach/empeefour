@@ -1,0 +1,37 @@
+# --- secrets / env -----------------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# --- node / electron build output --------------------------------------------
+node_modules/
+dist/
+out/
+build/
+*.tsbuildinfo
+
+# --- python ------------------------------------------------------------------
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+.uv/
+
+# --- recordings, agent memory, runtime state --------------------------------
+runs/
+.agentic-studio/
+*.mov
+*.mp4
+*.wav
+*.log
+
+# --- editor / OS -------------------------------------------------------------
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- misc --------------------------------------------------------------------
+codedb.snapshot
+.kuri/
