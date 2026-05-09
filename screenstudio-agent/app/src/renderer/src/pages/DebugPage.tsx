@@ -130,6 +130,46 @@ export default function DebugPage() {
   }, [selected])
 
 
+  // Play model audio chunks via Web Audio. Each chunk is base64 PCM s16le
+  // mono @ 24kHz. We schedule chunks back-to-back so playback is gapless.
+  useEffect(() => {
+    const s = studio()
+    if (!s) return
+    let ctx: AudioContext | null = null
+    let nextStartTime = 0
+    const off = s.onAudioChunk?.((b64) => {
+      if (!ctx) {
+        const Ctor =
+          (window as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext })
+            .AudioContext ||
+          (window as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+        if (!Ctor) return
+        ctx = new Ctor({ sampleRate: 24000 })
+      }
+      // base64 → Uint8Array → Int16Array → Float32Array (-1..1)
+      const bin = atob(b64)
+      const u8 = new Uint8Array(bin.length)
+      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i)
+      const i16 = new Int16Array(u8.buffer, u8.byteOffset, u8.byteLength / 2)
+      const f32 = new Float32Array(i16.length)
+      for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768
+      const buf = ctx.createBuffer(1, f32.length, 24000)
+      buf.copyToChannel(f32, 0)
+      const src = ctx.createBufferSource()
+      src.buffer = buf
+      src.connect(ctx.destination)
+      const startAt = Math.max(ctx.currentTime, nextStartTime)
+      src.start(startAt)
+      nextStartTime = startAt + buf.duration
+    })
+    return () => {
+      off?.()
+      try {
+        ctx?.close()
+      } catch {}
+    }
+  }, [])
+
   // Subscribe to voice state + log lines.
   useEffect(() => {
     const s = studio()

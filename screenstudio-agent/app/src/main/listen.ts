@@ -120,21 +120,13 @@ export class VoiceAgent extends EventEmitter {
     const wsAny = ws as unknown as {
       on(event: string, cb: (e: unknown) => void): void;
     };
-    let audioBytesReceived = 0;
     wsAny.on("response.output_audio.delta", (event) => {
       const delta = (event as { delta?: string })?.delta;
       if (!delta) return;
       const bytes = Buffer.from(delta, "base64");
-      audioBytesReceived += bytes.length;
-      if (audioBytesReceived === bytes.length) {
-        this.log("info", `audio.delta firing (speaker=${this.speaker ? "alive" : "null"}, writable=${!!this.speaker?.stdin?.writable})`);
-      }
-      if (!this.speaker?.stdin?.writable) return;
-      try {
-        this.speaker.stdin.write(bytes);
-      } catch (err) {
-        this.log("error", `speaker write failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
+      // Emit chunks for the main process to forward to the renderer's
+      // Web Audio API. ffplay was unreliable on macOS so we play in-browser.
+      this.emit("audio-chunk", bytes);
     });
 
     // Show what the model is saying alongside its audio.

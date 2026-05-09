@@ -15,6 +15,13 @@ const studio = {
     ipcRenderer.invoke('voice:setPlayhead', time),
   setMuted: (muted: boolean): Promise<{ ok: boolean; muted: boolean }> =>
     ipcRenderer.invoke('voice:setMuted', muted),
+  onAudioChunk(cb: (base64Pcm: string) => void) {
+    const handler = (_e: unknown, b: string): void => cb(b)
+    ipcRenderer.on('voice:audio-chunk', handler)
+    return (): void => {
+      ipcRenderer.removeListener('voice:audio-chunk', handler)
+    }
+  },
   onListenLog(cb: (line: string) => void) {
     const handler = (_e: unknown, line: string): void => cb(line)
     ipcRenderer.on('listen:log', handler)

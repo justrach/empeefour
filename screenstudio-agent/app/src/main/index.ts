@@ -158,6 +158,9 @@ async function setVoiceMode(enabled: boolean): Promise<{ active: boolean }> {
       voice = new VoiceAgent()
     }
 
+    voice.on('audio-chunk' as never, (bytes: Buffer) => {
+      mainWindow?.webContents.send('voice:audio-chunk', bytes.toString('base64'))
+    })
     voice.on('log', (line: ListenLogLine) => {
       const formatted = line.kind === 'mark' ? `+ ${line.text}` : `[${line.kind}] ${line.text}`
       mainWindow?.webContents.send('listen:log', formatted)
