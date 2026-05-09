@@ -8,7 +8,6 @@
 import OpenAI from "openai";
 import { OpenAIRealtimeWS } from "openai/realtime/ws";
 import { EventEmitter } from "node:events";
-import { spawn } from "node:child_process";
 import { screen } from "electron";
 
 import { StudioSession, TimelineEvent, appendEvent, loadActiveSession } from "./studio";
@@ -44,7 +43,6 @@ export type ListenLogLine = { kind: "info" | "heard" | "mark" | "error"; text: s
 export class VoiceAgent extends EventEmitter {
   private ws: OpenAIRealtimeWS | null = null;
   private ffmpeg: ReturnType<typeof spawnMacMicPcm> | null = null;
-  private speaker: import("node:child_process").ChildProcess | null = null;
   private muted = false;
   private session: StudioSession | null = null;
   private runName: string | null = null;
@@ -86,8 +84,7 @@ export class VoiceAgent extends EventEmitter {
     ws.socket.on("open", () => {
       ws.send(buildEditingSessionUpdate());
       if (this.opts.speakBack !== false) {
-        this.startSpeaker();
-        this.log("info", "voice-back on — wear headphones to avoid mic feedback");
+        this.log("info", "voice-back on — audio routes to renderer");
       }
       this.startAudioPump();
     });
@@ -169,58 +166,7 @@ export class VoiceAgent extends EventEmitter {
       }
       this.ffmpeg = null;
     }
-    this.stopSpeaker();
     this.log("info", "stopped");
-  }
-
-  private startSpeaker(): void {
-    try {
-      this.speaker = spawn(
-        "ffplay",
-        [
-          "-nodisp",
-          "-loglevel", "warning",
-          "-f", "s16le",
-          "-ar", String(REALTIME_AUDIO.sampleRate),
-          "-ch_layout", "mono",
-          "-",
-        ],
-        {
-          stdio: ["pipe", "ignore", "pipe"],
-          // Ensure ffplay (in /opt/homebrew/bin on Apple Silicon brew) is on PATH.
-          env: { ...process.env, PATH: process.env.PATH + ":/opt/homebrew/bin:/usr/local/bin" },
-        },
-      );
-      this.speaker.stderr?.on("data", (d: Buffer) =>
-        this.log("error", `ffplay: ${d.toString().trim()}`),
-      );
-      this.speaker.on("exit", () => {
-        this.speaker = null;
-      });
-      this.speaker.on("error", (err) => {
-        this.log("error", `speaker failed: ${err.message}`);
-        this.speaker = null;
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.log("error", `couldn't start ffplay: ${message}`);
-      this.speaker = null;
-    }
-  }
-
-  private stopSpeaker(): void {
-    if (!this.speaker) return;
-    try {
-      this.speaker.stdin?.end();
-    } catch {
-      /* ignore */
-    }
-    try {
-      this.speaker.kill("SIGTERM");
-    } catch {
-      /* ignore */
-    }
-    this.speaker = null;
   }
 
   private startAudioPump(): void {

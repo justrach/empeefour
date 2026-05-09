@@ -6,7 +6,8 @@
   "scripts": {
     "build": "tsc",
     "start": "tsc && electron dist/main.js",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "trial": "tsc && node dist/trial-edit.js"
   },
   "dependencies": {
     "@cursor/sdk": "^1.0.12",
