@@ -1,0 +1,23 @@
+{
+  "name": "agentic-video",
+  "version": "0.1.0",
+  "description": "Cursor-agent harness for editing video from a freeform prompt. Skills in skills/, music library in library/music/, output in runs/.",
+  "main": "dist/run.js",
+  "scripts": {
+    "build": "tsc",
+    "run": "tsc && node dist/run.js",
+    "run": "tsc && node dist/run.js",
+    "list": "tsc && node dist/list.js",
+  },
+  "dependencies": {
+    "@cursor/sdk": "^1.0.12",
+    "@types/better-sqlite3": "^7.6.13",
+    "better-sqlite3": "^12.9.0",
+    "dotenv": "^16.4.5",
+    "openai": "^6.37.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.4.0"
+  }
+}
