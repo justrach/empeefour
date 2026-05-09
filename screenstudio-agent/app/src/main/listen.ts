@@ -18,8 +18,10 @@ import {
   PcmChunker,
   REALTIME_AUDIO,
   buildEditingSessionUpdate,
+  functionCallOutputEvent,
   inputAudioAppendEvent,
   parseRealtimeToolCall,
+  responseCreateEvent,
   spawnMacMicPcm,
   type RealtimeToolCall,
 } from "./realtime-primitives";
@@ -248,6 +250,29 @@ export class VoiceAgent extends EventEmitter {
     this.log("info", value ? "mic muted" : "mic listening");
   }
 
+  // Required by the Realtime API: every tool call the model makes needs a
+  // matching function_call_output, otherwise the conversation thread is
+  // broken and the model improvises ("still running in the background")
+  // because it has no idea what happened to its tool call.
+  //
+  // For sync tools (mark_*) we ack with brief output and skip response.create
+  // since the model already verbalized. For async tools (cursor, web_search)
+  // we ack with status:running + create a response so the model says "okay,
+  // on it" — then sendSystemNote delivers the final result.
+  private sendToolOutput(callId: string, output: unknown, triggerResponse: boolean): void {
+    if (!this.ws) return;
+    try {
+      const wsAny = this.ws as unknown as { send(e: unknown): void };
+      wsAny.send(functionCallOutputEvent(callId, output));
+      if (triggerResponse) wsAny.send(responseCreateEvent());
+    } catch (err) {
+      this.log(
+        "error",
+        `sendToolOutput failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   private async handleToolCall(call: RealtimeToolCall): Promise<void> {
     if (!this.session) return;
     const { name, argsRaw, args } = call;
@@ -328,7 +353,10 @@ export class VoiceAgent extends EventEmitter {
         }
         case "mark_caption": {
           const text = String(args.text || "").trim();
-          if (!text) return;
+          if (!text) {
+            this.sendToolOutput(call.callId, { ok: false, error: "empty caption" }, false);
+            return;
+          }
           event = {
             type: "caption",
             time: eventTime,
@@ -355,6 +383,7 @@ export class VoiceAgent extends EventEmitter {
           if (resolvedEnd <= resolvedStart) {
             this.log("error", `mark_speed: bad range ${resolvedStart}-${resolvedEnd}`);
             callRecord("skipped", null, "bad range");
+            this.sendToolOutput(call.callId, { ok: false, error: "bad range" }, false);
             return;
           }
           event = {
@@ -373,6 +402,7 @@ export class VoiceAgent extends EventEmitter {
           if (start === undefined || end === undefined || end <= start) {
             this.log("error", `mark_cut requires start<end (got ${start}-${end})`);
             callRecord("skipped", null, "bad range");
+            this.sendToolOutput(call.callId, { ok: false, error: "need start and end with end>start" }, false);
             return;
           }
           event = {
@@ -397,18 +427,21 @@ export class VoiceAgent extends EventEmitter {
           if (!task) {
             this.log("error", "delegate_to_cursor: empty task");
             callRecord("skipped", null, "empty task");
+            this.sendToolOutput(call.callId, { ok: false, error: "task required" }, false);
             return;
           }
           if (!isCursorConfigured()) {
             this.log("error", "delegate_to_cursor: CURSOR_API_KEY not set");
             callRecord("error", null, "no cursor key");
-            // Tell the model so it can apologize verbally.
-            this.sendSystemNote(`Cursor agent unavailable: CURSOR_API_KEY missing.`);
+            this.sendToolOutput(call.callId, { ok: false, error: "CURSOR_API_KEY missing" }, true);
             return;
           }
           this.log("info", `delegating to cursor: ${task}`);
           callRecord("ok", null);
-          // Fire-and-forget; report back via system message when done.
+          // Ack the tool call so the conversation thread doesn't break.
+          // The actual result lands later via sendSystemNote when the
+          // Cursor run finishes.
+          this.sendToolOutput(call.callId, { status: "running", task }, true);
           void this.runCursorTask(task);
           return;
         }
@@ -417,17 +450,20 @@ export class VoiceAgent extends EventEmitter {
           if (!query) {
             this.log("error", "web_search: empty query");
             callRecord("skipped", null, "empty query");
+            this.sendToolOutput(call.callId, { ok: false, error: "query required" }, false);
             return;
           }
           const numResults = Math.min(8, Math.max(1, numOr(args.num_results, 4)));
           this.log("info", `web search: ${query}`);
           callRecord("ok", null);
+          this.sendToolOutput(call.callId, { status: "searching", query }, true);
           void this.runWebSearch(query, numResults);
           return;
         }
         default:
           this.log("error", `unknown tool: ${name}`);
           callRecord("error", null, "unknown tool");
+          this.sendToolOutput(call.callId, { ok: false, error: `unknown tool: ${name}` }, false);
           return;
       }
 
@@ -439,6 +475,10 @@ export class VoiceAgent extends EventEmitter {
           `${written.type.padEnd(7, " ")} t=${Number(written.time).toFixed(2)}s  ${note}`,
         );
         callRecord("ok", written);
+        // Close the Realtime conversation loop with a brief ack. No
+        // response.create — the model already verbalized briefly when it
+        // emitted the tool call, so we don't want it to speak again.
+        this.sendToolOutput(call.callId, { ok: true, type: written.type, time: written.time }, false);
         // Fire-and-forget: kick off a debounced Cursor refine pass.
         scheduleRefine(this.session.run_dir, (kind, text) => this.log(kind, text));
       }
@@ -446,6 +486,7 @@ export class VoiceAgent extends EventEmitter {
       const message = err instanceof Error ? err.message : String(err);
       this.log("error", message);
       callRecord("error", event, message);
+      this.sendToolOutput(call.callId, { ok: false, error: message }, false);
     }
   }
 
