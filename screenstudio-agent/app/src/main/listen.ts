@@ -120,13 +120,20 @@ export class VoiceAgent extends EventEmitter {
     const wsAny = ws as unknown as {
       on(event: string, cb: (e: unknown) => void): void;
     };
+    let audioBytesReceived = 0;
     wsAny.on("response.output_audio.delta", (event) => {
       const delta = (event as { delta?: string })?.delta;
-      if (!delta || !this.speaker?.stdin?.writable) return;
+      if (!delta) return;
+      const bytes = Buffer.from(delta, "base64");
+      audioBytesReceived += bytes.length;
+      if (audioBytesReceived === bytes.length) {
+        this.log("info", `audio.delta firing (speaker=${this.speaker ? "alive" : "null"}, writable=${!!this.speaker?.stdin?.writable})`);
+      }
+      if (!this.speaker?.stdin?.writable) return;
       try {
-        this.speaker.stdin.write(Buffer.from(delta, "base64"));
-      } catch {
-        /* speaker died — ignore */
+        this.speaker.stdin.write(bytes);
+      } catch (err) {
+        this.log("error", `speaker write failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     });
 
@@ -179,15 +186,21 @@ export class VoiceAgent extends EventEmitter {
       this.speaker = spawn(
         "ffplay",
         [
-          "-autoexit",
           "-nodisp",
-          "-loglevel", "quiet",
+          "-loglevel", "warning",
           "-f", "s16le",
           "-ar", String(REALTIME_AUDIO.sampleRate),
           "-ac", String(REALTIME_AUDIO.channels),
           "-",
         ],
-        { stdio: ["pipe", "ignore", "ignore"] },
+        {
+          stdio: ["pipe", "ignore", "pipe"],
+          // Ensure ffplay (in /opt/homebrew/bin on Apple Silicon brew) is on PATH.
+          env: { ...process.env, PATH: process.env.PATH + ":/opt/homebrew/bin:/usr/local/bin" },
+        },
+      );
+      this.speaker.stderr?.on("data", (d: Buffer) =>
+        this.log("error", `ffplay: ${d.toString().trim()}`),
       );
       this.speaker.on("exit", () => {
         this.speaker = null;
