@@ -3,12 +3,13 @@ import { Link } from 'react-router-dom'
 import { listRuns, mediaUrl, type RunSummary } from '../lib/api'
 import { studio } from '../lib/studio'
 
-type LogKind = 'info' | 'heard' | 'mark' | 'error'
+type Speaker = 'user' | 'model' | 'system'
 
-interface LogLine {
+interface ChatMsg {
   id: number
-  kind: LogKind
+  speaker: Speaker
   text: string
+  pending?: boolean
   ts: number
 }
 
@@ -47,20 +48,11 @@ function shortDetail(name: string, args: Record<string, unknown>): string {
   return ''
 }
 
-function dotColor(k: LogKind): string {
-  return {
-    info: 'bg-neutral-400',
-    heard: 'bg-blue-500',
-    mark: 'bg-emerald-500',
-    error: 'bg-red-500'
-  }[k]
-}
-
 function plural(n: number, s: string): string {
   return n === 1 ? `1 ${s}` : `${n} ${s}s`
 }
 
-let logSeq = 0
+let msgSeq = 0
 let balloonSeq = 0
 
 export default function HomePage() {
@@ -68,12 +60,14 @@ export default function HomePage() {
   const [voiceActive, setVoiceActive] = useState(false)
   const [voiceMuted, setVoiceMuted] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
-  const [log, setLog] = useState<LogLine[]>([])
+  const [chat, setChat] = useState<ChatMsg[]>([])
   const [balloons, setBalloons] = useState<Balloon[]>([])
   const wasMutedBeforeSpace = useRef(false)
   const audioCtxRef = useRef<AudioContext | null>(null)
   const audioNextRef = useRef<number>(0)
-  const logScrollRef = useRef<HTMLUListElement | null>(null)
+  const chatScrollRef = useRef<HTMLDivElement | null>(null)
+  // Track the in-flight pending model bubble id so deltas append + .done finalizes.
+  const pendingModelIdRef = useRef<number | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -103,13 +97,36 @@ export default function HomePage() {
     })
     const offLog = s.onListenLog?.((line) => {
       const text = String(line || '')
-      let kind: LogKind = 'info'
-      if (text.startsWith('[heard]')) kind = 'heard'
-      else if (text.startsWith('+')) kind = 'mark'
-      else if (text.startsWith('[error]')) kind = 'error'
-      const stripped = text.replace(/^(\[(?:heard|info|error)\]|\+)\s*/, '').trim()
-      if (stripped)
-        setLog((prev) => [...prev.slice(-100), { id: ++logSeq, kind, text: stripped, ts: Date.now() }])
+      // Heard = whisper transcription. Show as user bubble.
+      if (text.startsWith('[heard]')) {
+        const stripped = text.replace(/^\[heard\]\s*/, '').trim()
+        if (!stripped) return
+        setChat((prev) => [
+          ...prev.slice(-40),
+          { id: ++msgSeq, speaker: 'user', text: stripped, ts: Date.now() }
+        ])
+        return
+      }
+      // Errors as system chips
+      if (text.startsWith('[error]')) {
+        const stripped = text.replace(/^\[error\]\s*/, '').trim()
+        if (stripped)
+          setChat((prev) => [
+            ...prev.slice(-40),
+            { id: ++msgSeq, speaker: 'system', text: `error: ${stripped}`, ts: Date.now() }
+          ])
+        return
+      }
+      // marks (+) as system chips
+      if (text.startsWith('+')) {
+        const stripped = text.slice(1).trim()
+        if (stripped)
+          setChat((prev) => [
+            ...prev.slice(-40),
+            { id: ++msgSeq, speaker: 'system', text: stripped, ts: Date.now() }
+          ])
+      }
+      // 'model: …' lines are handled by transcript-delta/done streams instead.
     })
     const offChunk = s.onAudioChunk?.((b64) => {
       if (!audioCtxRef.current) {
@@ -152,11 +169,41 @@ export default function HomePage() {
         setBalloons((prev) => prev.filter((x) => x.id !== id))
       }, 2400)
     })
+    const offDelta = s.onTranscriptDelta?.(({ role, delta }) => {
+      if (role !== 'model' || !delta) return
+      setChat((prev) => {
+        // Append to the active pending model bubble; create one if none.
+        if (pendingModelIdRef.current !== null) {
+          return prev.map((m) =>
+            m.id === pendingModelIdRef.current ? { ...m, text: m.text + delta } : m
+          )
+        }
+        const id = ++msgSeq
+        pendingModelIdRef.current = id
+        return [
+          ...prev.slice(-40),
+          { id, speaker: 'model', text: delta, pending: true, ts: Date.now() }
+        ]
+      })
+    })
+    const offDone = s.onTranscriptDone?.(({ role }) => {
+      if (role !== 'model') return
+      setChat((prev) =>
+        prev.map((m) =>
+          pendingModelIdRef.current !== null && m.id === pendingModelIdRef.current
+            ? { ...m, pending: false }
+            : m
+        )
+      )
+      pendingModelIdRef.current = null
+    })
     return () => {
       offState()
       offLog?.()
       offChunk?.()
       offTool?.()
+      offDelta?.()
+      offDone?.()
       try {
         audioCtxRef.current?.close()
       } catch {
@@ -167,10 +214,10 @@ export default function HomePage() {
   }, [])
 
   useEffect(() => {
-    const el = logScrollRef.current
+    const el = chatScrollRef.current
     if (!el) return
-    el.scrollTop = el.scrollHeight
-  }, [log])
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+  }, [chat])
 
   useEffect(() => {
     if (!voiceActive) return
@@ -218,6 +265,15 @@ export default function HomePage() {
     setVoiceActive(!!r.active)
   }
 
+  // Show typing indicator when voice is on, the last message was the user,
+  // and no model message is currently being streamed.
+  const lastMsg = chat[chat.length - 1]
+  const showTyping =
+    voiceActive &&
+    !!lastMsg &&
+    lastMsg.speaker === 'user' &&
+    pendingModelIdRef.current === null
+
   return (
     <div className="relative flex min-h-screen flex-col overflow-hidden bg-soft">
       <style>{`
@@ -227,9 +283,13 @@ export default function HomePage() {
           60% { transform: translate(-50%, -120px) scale(1); opacity: 1; }
           100% { transform: translate(-50%, -240px) scale(0.92); opacity: 0; filter: blur(2px); }
         }
-        @keyframes logEnter {
-          0% { transform: translateY(8px); opacity: 0; filter: blur(4px); }
-          100% { transform: translateY(0); opacity: 1; filter: blur(0); }
+        @keyframes msgInUser {
+          0% { transform: translateY(10px) scale(0.96); opacity: 0; filter: blur(4px); }
+          100% { transform: translateY(0) scale(1); opacity: 1; filter: blur(0); }
+        }
+        @keyframes msgInModel {
+          0% { transform: translate(-6px, 10px) scale(0.96); opacity: 0; filter: blur(4px); }
+          100% { transform: translate(0,0) scale(1); opacity: 1; filter: blur(0); }
         }
         @keyframes orbBreath {
           0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239,68,68,0.55), 0 14px 40px -12px rgba(239,68,68,0.55); }
@@ -241,12 +301,32 @@ export default function HomePage() {
           100% { transform: translateX(0); opacity: 1; }
         }
         @keyframes scrim { 0% { opacity: 0; } 100% { opacity: 1; } }
+        @keyframes typingDot {
+          0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+          30% { transform: translateY(-4px); opacity: 1; }
+        }
+        @keyframes caretBlink {
+          0%, 50% { opacity: 1; }
+          51%, 100% { opacity: 0; }
+        }
+        @keyframes shimmer {
+          0% { background-position: -200% 0; }
+          100% { background-position: 200% 0; }
+        }
         .balloon { animation: balloonRise 2.4s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
-        .log-enter { animation: logEnter 320ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+        .msg-user { animation: msgInUser 380ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+        .msg-model { animation: msgInModel 380ms cubic-bezier(0.22, 1, 0.36, 1) both; }
         .orb-active { animation: orbBreath 1.6s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
         .ring-spin { animation: ringSpin 6s linear infinite; }
         .drawer-in { animation: drawerSlide 360ms cubic-bezier(0.22, 1, 0.36, 1) both; }
         .scrim-in { animation: scrim 240ms ease-out both; }
+        .typing-dot { animation: typingDot 1.2s ease-in-out infinite; }
+        .caret-blink { animation: caretBlink 1s step-start infinite; }
+        .pending-glow {
+          background-image: linear-gradient(110deg, rgba(255,255,255,0) 30%, rgba(99,102,241,0.08) 50%, rgba(255,255,255,0) 70%);
+          background-size: 200% 100%;
+          animation: shimmer 3s ease-in-out infinite;
+        }
         .ease-spring { transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1); }
       `}</style>
 
@@ -276,22 +356,20 @@ export default function HomePage() {
         </Link>
       </header>
 
-      <main className="relative flex flex-1 flex-col items-center justify-center px-6 pt-2 pb-10">
+      <main className="relative flex flex-1 flex-col items-center justify-start px-6 pt-10 pb-10">
         <div className="flex w-full max-w-2xl flex-col items-center gap-8 text-center">
           <div>
-            <h1 className="mx-auto max-w-xl text-[40px] font-bold leading-[1.1] tracking-tight">
-              Talk and the agent edits your demo.
+            <h1 className="mx-auto max-w-xl text-[36px] font-bold leading-[1.1] tracking-tight">
+              {voiceActive ? 'Listening.' : 'Talk and the agent edits your demo.'}
             </h1>
-            <p className="mt-3 text-[15px] text-muted">
-              Hit the button, say what you want.{' '}
-              <span className="hidden sm:inline">
-                Try “zoom in here”, “cut from five to eight”, or “search the web for Anthropic news”.
-              </span>
+            <p className="mt-3 text-[14px] text-muted">
+              {voiceActive
+                ? 'Press M to mute · hold Space to push-to-talk'
+                : 'Try “zoom in here”, “cut from five to eight”, or “search the web for Anthropic news”.'}
             </p>
           </div>
 
           <div className="relative flex flex-col items-center gap-4">
-            {/* Balloons float up from the orb when tools fire. */}
             <div className="pointer-events-none absolute -top-4 left-1/2 z-20 h-1 w-1">
               {balloons.map((b) => (
                 <div
@@ -351,25 +429,19 @@ export default function HomePage() {
 
             <div className="flex items-center gap-2 text-[12px] font-semibold text-muted transition-all duration-300 ease-spring">
               {voiceActive ? (
-                <>
-                  <button
-                    onClick={() => setMicMuted(!voiceMuted)}
-                    className={[
-                      'inline-flex h-7 items-center gap-1 rounded-md px-2.5 text-[11px] font-bold text-white',
-                      'transition-all duration-200 ease-spring active:scale-95',
-                      voiceMuted ? 'bg-amber-500 hover:bg-amber-400' : 'bg-green hover:opacity-90'
-                    ].join(' ')}
-                  >
-                    <span className={voiceMuted ? '' : 'animate-pulse'}>
-                      {voiceMuted ? '🔇' : '🎙'}
-                    </span>
-                    {voiceMuted ? 'Muted' : 'Listening'}
-                  </button>
-                  <span>·</span>
-                  <span>
-                    Press <kbd>M</kbd> to mute · hold <kbd>Space</kbd>
+                <button
+                  onClick={() => setMicMuted(!voiceMuted)}
+                  className={[
+                    'inline-flex h-7 items-center gap-1 rounded-full px-3 text-[11px] font-bold text-white',
+                    'transition-all duration-200 ease-spring active:scale-95',
+                    voiceMuted ? 'bg-amber-500 hover:bg-amber-400' : 'bg-green hover:opacity-90'
+                  ].join(' ')}
+                >
+                  <span className={voiceMuted ? '' : 'animate-pulse'}>
+                    {voiceMuted ? '🔇' : '🎙'}
                   </span>
-                </>
+                  {voiceMuted ? 'Muted' : 'Listening'}
+                </button>
               ) : (
                 <span>Click the orb to start</span>
               )}
@@ -381,43 +453,110 @@ export default function HomePage() {
             )}
           </div>
 
+          {/* Conversation flow */}
           <div
             className={[
-              'w-full max-w-xl overflow-hidden rounded-xl border border-line bg-white shadow-sm',
+              'w-full max-w-xl overflow-hidden rounded-2xl border border-line bg-white/70 backdrop-blur shadow-sm',
               'transition-all duration-500 ease-spring',
-              voiceActive || log.length > 0
-                ? 'opacity-100 translate-y-0 max-h-[360px]'
+              voiceActive || chat.length > 0
+                ? 'opacity-100 translate-y-0 max-h-[440px]'
                 : 'opacity-0 translate-y-4 max-h-0 border-transparent'
             ].join(' ')}
           >
-            <div className="p-4">
-              <div className="mb-2 flex items-baseline justify-between">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-muted">
-                  Conversation
-                </span>
+            <div className="flex items-baseline justify-between border-b border-line/60 px-4 pt-3 pb-2">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-muted">
+                Conversation
+              </span>
+              {chat.length > 0 && (
                 <button
-                  onClick={() => setLog([])}
+                  onClick={() => setChat([])}
                   className="text-[11px] text-muted transition hover:text-ink"
                 >
                   Clear
                 </button>
-              </div>
-              {log.length === 0 ? (
-                <p className="py-4 text-center text-[12px] text-muted">Listening…</p>
+              )}
+            </div>
+            <div
+              ref={chatScrollRef}
+              className="flex max-h-[360px] flex-col gap-2 overflow-y-auto px-4 py-4 text-left"
+            >
+              {chat.length === 0 ? (
+                <p className="py-6 text-center text-[12.5px] text-muted">
+                  Listening…
+                </p>
               ) : (
-                <ul
-                  ref={logScrollRef}
-                  className="max-h-[260px] space-y-1.5 overflow-y-auto text-[12.5px]"
-                >
-                  {log.map((l) => (
-                    <li key={l.id} className="log-enter flex items-start gap-2">
-                      <span
-                        className={`mt-1.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full ${dotColor(l.kind)}`}
-                      />
-                      <span className="flex-1 break-words text-left text-ink">{l.text}</span>
-                    </li>
-                  ))}
-                </ul>
+                chat.map((m) => {
+                  if (m.speaker === 'user') {
+                    return (
+                      <div key={m.id} className="msg-user flex justify-end">
+                        <div
+                          className="max-w-[80%] rounded-2xl rounded-br-md px-3.5 py-2 text-[13.5px] leading-relaxed text-white shadow-sm"
+                          style={{
+                            background: 'linear-gradient(180deg,#3b82f6,#1d4ed8)'
+                          }}
+                        >
+                          {m.text}
+                        </div>
+                      </div>
+                    )
+                  }
+                  if (m.speaker === 'model') {
+                    return (
+                      <div key={m.id} className="msg-model flex items-start gap-2">
+                        <div
+                          className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white shadow"
+                          style={{
+                            background: 'linear-gradient(135deg,#a855f7,#ec4899)'
+                          }}
+                        >
+                          A
+                        </div>
+                        <div
+                          className={[
+                            'max-w-[85%] rounded-2xl rounded-tl-md border border-line/70 px-3.5 py-2 text-[13.5px] leading-relaxed text-ink shadow-sm',
+                            m.pending ? 'bg-white pending-glow' : 'bg-white'
+                          ].join(' ')}
+                        >
+                          {m.text}
+                          {m.pending && (
+                            <span className="caret-blink ml-0.5 inline-block w-[2px] align-text-bottom h-[14px] bg-indigo-500" />
+                          )}
+                        </div>
+                      </div>
+                    )
+                  }
+                  // system / mark / error
+                  return (
+                    <div key={m.id} className="msg-model flex justify-center">
+                      <div className="rounded-full border border-line/60 bg-white/60 px-3 py-1 text-[10.5px] font-semibold uppercase tracking-wider text-muted">
+                        {m.text}
+                      </div>
+                    </div>
+                  )
+                })
+              )}
+              {showTyping && (
+                <div className="msg-model flex items-start gap-2">
+                  <div
+                    className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white shadow"
+                    style={{
+                      background: 'linear-gradient(135deg,#a855f7,#ec4899)'
+                    }}
+                  >
+                    A
+                  </div>
+                  <div className="rounded-2xl rounded-tl-md border border-line/70 bg-white px-4 py-2.5 shadow-sm">
+                    <div className="flex items-center gap-1.5">
+                      {[0, 1, 2].map((i) => (
+                        <span
+                          key={i}
+                          className="typing-dot inline-block h-1.5 w-1.5 rounded-full bg-neutral-400"
+                          style={{ animationDelay: `${i * 160}ms` }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
               )}
             </div>
           </div>
@@ -454,7 +593,7 @@ export default function HomePage() {
               <li className="px-2 py-4 text-[12px] text-muted">No takes yet.</li>
             ) : (
               runs.map((r, i) => (
-                <li key={r.name} className="log-enter" style={{ animationDelay: `${i * 30}ms` }}>
+                <li key={r.name} className="msg-model" style={{ animationDelay: `${i * 30}ms` }}>
                   <Link
                     to={`/debug/${encodeURIComponent(r.name)}`}
                     onClick={() => setDrawerOpen(false)}

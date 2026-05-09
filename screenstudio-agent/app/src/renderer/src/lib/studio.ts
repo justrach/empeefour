@@ -26,6 +26,15 @@ export interface ToolFiredPayload {
   args: Record<string, unknown>
 }
 
+export interface TranscriptDeltaPayload {
+  role: 'model' | 'user'
+  delta: string
+}
+
+export interface TranscriptDonePayload {
+  role: 'model' | 'user'
+}
+
 export interface StudioBridge {
   toggleVoice(): Promise<VoiceState>
   getVoiceState(): Promise<VoiceState>
@@ -34,6 +43,8 @@ export interface StudioBridge {
   setMuted(muted: boolean): Promise<{ ok: boolean; muted: boolean }>
   onAudioChunk(cb: (base64Pcm: string) => void): () => void
   onToolFired(cb: (payload: ToolFiredPayload) => void): () => void
+  onTranscriptDelta(cb: (payload: TranscriptDeltaPayload) => void): () => void
+  onTranscriptDone(cb: (payload: TranscriptDonePayload) => void): () => void
   onListenLog(cb: (line: string) => void): () => void
   onListenState(cb: (state: VoiceState) => void): () => void
   stats(): Promise<AgentStats>

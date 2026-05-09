@@ -30,6 +30,21 @@ const studio = {
       ipcRenderer.removeListener('voice:tool-fired', handler)
     }
   },
+  onTranscriptDelta(cb: (payload: { role: 'model' | 'user'; delta: string }) => void) {
+    const handler = (_e: unknown, payload: { role: 'model' | 'user'; delta: string }): void =>
+      cb(payload)
+    ipcRenderer.on('voice:transcript-delta', handler)
+    return (): void => {
+      ipcRenderer.removeListener('voice:transcript-delta', handler)
+    }
+  },
+  onTranscriptDone(cb: (payload: { role: 'model' | 'user' }) => void) {
+    const handler = (_e: unknown, payload: { role: 'model' | 'user' }): void => cb(payload)
+    ipcRenderer.on('voice:transcript-done', handler)
+    return (): void => {
+      ipcRenderer.removeListener('voice:transcript-done', handler)
+    }
+  },
   onListenLog(cb: (line: string) => void) {
     const handler = (_e: unknown, line: string): void => cb(line)
     ipcRenderer.on('listen:log', handler)

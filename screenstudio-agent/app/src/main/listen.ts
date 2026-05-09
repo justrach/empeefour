@@ -127,10 +127,20 @@ export class VoiceAgent extends EventEmitter {
       this.emit("audio-chunk", bytes);
     });
 
+    // Stream model text token-by-token so the renderer can show it flowing
+    // in alongside the audio. The .done event below still fires for the
+    // final cleaned transcript.
+    wsAny.on("response.output_audio_transcript.delta", (event) => {
+      const delta = String((event as { delta?: string })?.delta || "");
+      if (!delta) return;
+      this.emit("transcript-delta", { role: "model", delta });
+    });
+
     // Show what the model is saying alongside its audio.
     wsAny.on("response.output_audio_transcript.done", (event) => {
       const text = String((event as { transcript?: string })?.transcript || "").trim();
       if (text) this.log("info", `model: ${text}`);
+      this.emit("transcript-done", { role: "model" });
     });
 
     // Surface text-only responses (model emitting prose instead of tools)
