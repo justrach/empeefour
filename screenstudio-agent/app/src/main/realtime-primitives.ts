@@ -181,8 +181,8 @@ export function buildEditingSessionUpdate(opts: EditingSessionOptions = {}): Ses
         transcription: { model: opts.transcriptionModel ?? "whisper-1" },
         turn_detection: {
           type: "server_vad",
-          threshold: vad.threshold ?? 0.7,
-          silence_duration_ms: vad.silenceDurationMs ?? 800,
+          threshold: vad.threshold ?? 0.5,
+          silence_duration_ms: vad.silenceDurationMs ?? 600,
           create_response: vad.createResponse ?? true,
           interrupt_response: vad.interruptResponse ?? true,
         },
