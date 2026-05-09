@@ -47,7 +47,6 @@ export class VoiceAgent extends EventEmitter {
   private ws: OpenAIRealtimeWS | null = null;
   private ffmpeg: ReturnType<typeof spawnMacMicPcm> | null = null;
   private muted = false;
-  private modelSpeaking = false;
   private turnTranscript = "";
   private turnLogged = false;
   private session: StudioSession | null = null;
@@ -168,7 +167,6 @@ export class VoiceAgent extends EventEmitter {
     // bouncing back through the speakers and INTERRUPTS the model — the
     // response can be cut short and we lose the rest of the reply.
     ws.on("response.created", () => {
-      this.modelSpeaking = true;
       this.turnTranscript = "";
       this.turnLogged = false;
     });
@@ -193,14 +191,14 @@ export class VoiceAgent extends EventEmitter {
         // bubble in the renderer flips out of pending state.
         this.emit("transcript-done", { role: "model" });
       }
-      // Grace period to let any tail audio finish playing before we re-open
-      // the mic. Empirically ~400ms is enough for the speakers to stop.
-      setTimeout(() => {
-        this.modelSpeaking = false;
-      }, 400);
     });
 
-    ws.on("error", (err) => this.log("error", err.message || String(err)));
+    ws.on("error", (err) => {
+      const msg = err.message || String(err);
+      // Benign race when our async tool result lands while VAD is mid-turn.
+      if (msg.includes("already has an active response")) return;
+      this.log("error", msg);
+    });
     ws.socket.on("close", () => this.log("info", "ws closed"));
   }
 
@@ -229,10 +227,7 @@ export class VoiceAgent extends EventEmitter {
     const stream = this.ffmpeg.stdout;
     if (!stream) return;
     const chunker = new PcmChunker((chunk) => {
-      // Drop mic audio while the model is speaking — without echo cancellation,
-      // the speakers loop the model's own voice back into the mic and Whisper
-      // re-transcribes it as user input.
-      if (!this.ws || !this.active || this.muted || this.modelSpeaking) return;
+      if (!this.ws || !this.active || this.muted) return;
       try {
         this.ws.send(inputAudioAppendEvent(chunk));
       } catch {
@@ -433,7 +428,7 @@ export class VoiceAgent extends EventEmitter {
           if (!isCursorConfigured()) {
             this.log("error", "delegate_to_cursor: CURSOR_API_KEY not set");
             callRecord("error", null, "no cursor key");
-            this.sendToolOutput(call.callId, { ok: false, error: "CURSOR_API_KEY missing" }, true);
+            this.sendToolOutput(call.callId, { ok: false, error: "CURSOR_API_KEY missing" }, false);
             return;
           }
           this.log("info", `delegating to cursor: ${task}`);
@@ -441,7 +436,7 @@ export class VoiceAgent extends EventEmitter {
           // Ack the tool call so the conversation thread doesn't break.
           // The actual result lands later via sendSystemNote when the
           // Cursor run finishes.
-          this.sendToolOutput(call.callId, { status: "running", task }, true);
+          this.sendToolOutput(call.callId, { status: "running", task }, false);
           void this.runCursorTask(task);
           return;
         }
@@ -456,7 +451,7 @@ export class VoiceAgent extends EventEmitter {
           const numResults = Math.min(8, Math.max(1, numOr(args.num_results, 4)));
           this.log("info", `web search: ${query}`);
           callRecord("ok", null);
-          this.sendToolOutput(call.callId, { status: "searching", query }, true);
+          this.sendToolOutput(call.callId, { status: "searching", query }, false);
           void this.runWebSearch(query, numResults);
           return;
         }
