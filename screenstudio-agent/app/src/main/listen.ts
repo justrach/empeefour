@@ -551,6 +551,24 @@ export class VoiceAgent extends EventEmitter {
           void this.runWebSearch(query, numResults);
           return;
         }
+        case "health_data_analysis": {
+          const question = String(args.question || "").trim();
+          const window = String(args.window || "last 30d").trim() || "last 30d";
+          if (!question) {
+            this.log("error", "health_data_analysis: empty question");
+            callRecord("skipped", null, "empty question");
+            this.sendToolOutput(call.callId, { ok: false, error: "question required" }, false);
+            return;
+          }
+          // Parse "last 30d" / "30 days" / "this month" → number of days
+          const dm = window.match(/(\d+)/);
+          const days = dm ? Math.max(1, Math.min(365, Number(dm[1]))) : (window.includes("year") ? 365 : 30);
+          this.log("info", `health analysis: ${question} (${window} → ${days}d)`);
+          callRecord("ok", null);
+          this.sendToolOutput(call.callId, { status: "analyzing", question, window }, true);
+          void this.runHealthDataAnalysis(question, "summary", days);
+          return;
+        }
         default:
           this.log("error", `unknown tool: ${name}`);
           callRecord("error", null, "unknown tool");
@@ -615,7 +633,7 @@ export class VoiceAgent extends EventEmitter {
     }
   }
 
-  private async runWebSearch(query: string, numResults: number): Promise<void> {
+private async runWebSearch(query: string, numResults: number): Promise<void> {
     const apiKey = process.env.EXA_API_KEY || process.env["EXA-API-KEY"];
     if (!apiKey) {
       this.log("error", "web_search: EXA_API_KEY not set");
@@ -667,6 +685,44 @@ export class VoiceAgent extends EventEmitter {
     }
   }
 
+  private async runHealthDataAnalysis(query: string, metric: string, days: number): Promise<void> {
+    try {
+      const dir = process.env.HEALTH_ANALYSIS_DIR || path.join(os.homedir(), "apple-health", "analysis");
+      if (!fs.existsSync(dir)) {
+        this.sendSystemNote(`Apple Health data not found at ${dir}. Tell the user briefly that they need to run the converter first.`);
+        return;
+      }
+
+      const wanted = metric === "summary" || metric === "all"
+        ? ["steps", "distance", "heart_rate", "weight", "sleep", "workouts"]
+        : [metric];
+
+      const sections: string[] = [];
+      for (const m of wanted) {
+        const text = summarizeHealthMetric(dir, m, days);
+        if (text) sections.push(text);
+      }
+
+      if (sections.length === 0) {
+        this.sendSystemNote(`No Apple Health CSVs found in ${dir} for metric "${metric}". Tell the user.`);
+        return;
+      }
+
+      const note = [
+        `Apple Health stats for "${query}" (window: last ${days} days):`,
+        "",
+        sections.join("\n\n"),
+        "",
+        "Verbalize the most relevant numbers naturally in 2-4 sentences. Don't list every stat — pick what answers the user's question.",
+      ].join("\n");
+      this.log("info", `health analysis: ${sections.length} section(s)`);
+      this.sendSystemNote(note);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log("error", `health_data_analysis failed: ${msg}`);
+      this.sendSystemNote(`Health data analysis failed: ${msg}`);
+    }
+  }
   private log(kind: ListenLogLine["kind"], text: string): void {
     const line: ListenLogLine = { kind, text };
     this.emit("log", line);
@@ -698,5 +754,141 @@ function readCursor(): { x: number; y: number } | null {
     return { x: point.x, y: point.y };
   } catch {
     return null;
+  }
+}
+
+type DailyRow = { date: string; value: number };
+
+function fmtNum(n: number, digits = 0): string {
+  if (!Number.isFinite(n)) return "n/a";
+  return n.toLocaleString("en-US", { maximumFractionDigits: digits, minimumFractionDigits: digits });
+}
+
+function readDailyCsv(filePath: string): DailyRow[] {
+  if (!fs.existsSync(filePath)) return [];
+  const lines = fs.readFileSync(filePath, "utf8").trim().split("\n");
+  if (lines.length < 2) return [];
+  const out: DailyRow[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const parts = lines[i].split(",");
+    const date = parts[0];
+    const value = Number(parts[1]);
+    if (date && Number.isFinite(value)) out.push({ date, value });
+  }
+  return out;
+}
+
+function readCsvRecords(filePath: string): Record<string, string>[] {
+  if (!fs.existsSync(filePath)) return [];
+  const lines = fs.readFileSync(filePath, "utf8").trim().split("\n");
+  if (lines.length < 2) return [];
+  const headers = lines[0].split(",");
+  const out: Record<string, string>[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    // Apple Health CSVs from this tool don't contain quoted commas, so a simple split is safe.
+    const parts = lines[i].split(",");
+    const row: Record<string, string> = {};
+    for (let h = 0; h < headers.length; h++) row[headers[h]] = parts[h] ?? "";
+    out.push(row);
+  }
+  return out;
+}
+
+function summarizeDaily(label: string, unit: string, rows: DailyRow[], windowDays: number, digits: number): string | null {
+  if (!rows.length) return null;
+  const sorted = [...rows].map((r) => r.value).sort((a, b) => a - b);
+  const total = sorted.reduce((s, v) => s + v, 0);
+  const avg = total / sorted.length;
+  const mid = Math.floor(sorted.length / 2);
+  const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  const min = sorted[0];
+  const max = sorted[sorted.length - 1];
+  const recent = rows.slice(-windowDays);
+  const recentAvg = recent.length ? recent.reduce((s, r) => s + r.value, 0) / recent.length : NaN;
+  const first = rows[0].date;
+  const last = rows[rows.length - 1].date;
+  return [
+    `${label} — ${rows.length} days (${first} → ${last})`,
+    `  total ${fmtNum(total, digits)} ${unit} · avg ${fmtNum(avg, digits + 1)}/day · median ${fmtNum(median, digits + 1)}`,
+    `  min ${fmtNum(min, digits + 1)} · max ${fmtNum(max, digits + 1)} · last-${windowDays}d avg ${fmtNum(recentAvg, digits + 1)}`,
+  ].join("\n");
+}
+
+function summarizeSleep(filePath: string, windowDays: number): string | null {
+  const rows = readCsvRecords(filePath);
+  if (!rows.length) return null;
+  const dates = rows.map((r) => r.date).filter(Boolean).sort();
+  const first = dates[0];
+  const last = dates[dates.length - 1];
+  const byType = new Map<string, { count: number; hours: number }>();
+  for (const r of rows) {
+    const t = (r.sleep_type || "Unknown").trim();
+    const h = Number(r.duration_hours);
+    const cur = byType.get(t) ?? { count: 0, hours: 0 };
+    cur.count += 1;
+    if (Number.isFinite(h)) cur.hours += h;
+    byType.set(t, cur);
+  }
+  const recentCutoff = new Date(last);
+  recentCutoff.setDate(recentCutoff.getDate() - windowDays);
+  const recentIso = recentCutoff.toISOString().slice(0, 10);
+  const recent = rows.filter((r) => r.date >= recentIso);
+  const recentAsleep = recent
+    .filter((r) => /Asleep|Core|Deep|REM/.test(r.sleep_type || ""))
+    .reduce((s, r) => s + (Number(r.duration_hours) || 0), 0);
+  const lines = [`Sleep — ${rows.length} records (${first} → ${last})`];
+  for (const [t, v] of [...byType.entries()].sort((a, b) => b[1].hours - a[1].hours)) {
+    lines.push(`  ${t}: ${v.count} records, ${fmtNum(v.hours, 1)}h total`);
+  }
+  lines.push(`  last-${windowDays}d total Asleep/Core/Deep/REM: ${fmtNum(recentAsleep, 1)}h`);
+  return lines.join("\n");
+}
+
+function summarizeWorkouts(filePath: string, windowDays: number): string | null {
+  const rows = readCsvRecords(filePath);
+  if (!rows.length) return null;
+  const dates = rows.map((r) => r.date).filter(Boolean).sort();
+  const first = dates[0];
+  const last = dates[dates.length - 1];
+  const totalHours = rows.reduce((s, r) => s + (Number(r.duration_hours) || 0), 0);
+  const totalCal = rows.reduce((s, r) => s + (Number(r.calories) || 0), 0);
+  const byType = new Map<string, { count: number; minutes: number }>();
+  for (const r of rows) {
+    const t = (r.activity_type || "Unknown").trim();
+    const m = Number(r.duration_minutes);
+    const cur = byType.get(t) ?? { count: 0, minutes: 0 };
+    cur.count += 1;
+    if (Number.isFinite(m)) cur.minutes += m;
+    byType.set(t, cur);
+  }
+  const recentCutoff = new Date(last);
+  recentCutoff.setDate(recentCutoff.getDate() - windowDays);
+  const recentIso = recentCutoff.toISOString().slice(0, 10);
+  const recent = rows.filter((r) => r.date >= recentIso);
+  const lines = [
+    `Workouts — ${rows.length} sessions (${first} → ${last}); total ${fmtNum(totalHours, 1)}h, ${fmtNum(totalCal)} kcal`,
+    `  last-${windowDays}d: ${recent.length} sessions, ${fmtNum(recent.reduce((s, r) => s + (Number(r.duration_minutes) || 0), 0))} min`,
+  ];
+  const top = [...byType.entries()].sort((a, b) => b[1].minutes - a[1].minutes).slice(0, 6);
+  lines.push("  top types: " + top.map(([t, v]) => `${t} (${v.count}, ${fmtNum(v.minutes)}m)`).join(", "));
+  return lines.join("\n");
+}
+
+function summarizeHealthMetric(dir: string, metric: string, windowDays: number): string | null {
+  switch (metric) {
+    case "steps":
+      return summarizeDaily("Steps", "steps", readDailyCsv(path.join(dir, "steps_data.csv")), windowDays, 0);
+    case "distance":
+      return summarizeDaily("Distance walked/run", "km", readDailyCsv(path.join(dir, "distance_data.csv")), windowDays, 1);
+    case "heart_rate":
+      return summarizeDaily("Heart rate (daily mean)", "BPM", readDailyCsv(path.join(dir, "heart_rate_data.csv")), windowDays, 0);
+    case "weight":
+      return summarizeDaily("Weight", "kg", readDailyCsv(path.join(dir, "weight_data.csv")), windowDays, 1);
+    case "sleep":
+      return summarizeSleep(path.join(dir, "sleep_data.csv"), windowDays);
+    case "workouts":
+      return summarizeWorkouts(path.join(dir, "workout_data.csv"), windowDays);
+    default:
+      return null;
   }
 }

@@ -40,7 +40,8 @@ const TOOL_LOOKS: Record<string, { emoji: string; label: string; tint: string }>
   mark_cut: { emoji: '✂️', label: 'Cut', tint: 'from-rose-500 to-pink-600' },
   mark_marker: { emoji: '📍', label: 'Marker', tint: 'from-yellow-400 to-amber-600' },
   delegate_to_cursor: { emoji: '🤖', label: 'Cursor', tint: 'from-indigo-500 to-violet-600' },
-  web_search: { emoji: '🌐', label: 'Search', tint: 'from-sky-500 to-blue-600' }
+  web_search: { emoji: '🌐', label: 'Search', tint: 'from-sky-500 to-blue-600' },
+  health_data_analysis: { emoji: '❤️‍🔥', label: 'Health', tint: 'from-rose-500 to-orange-500' }
 }
 
 function lookForTool(name: string): { emoji: string; label: string; tint: string } {
@@ -54,6 +55,7 @@ function shortDetail(name: string, args: Record<string, unknown>): string {
   if (name === 'web_search') return String(args.query || '').slice(0, 40)
   if (name === 'delegate_to_cursor') return String(args.task || '').slice(0, 60)
   if (name === 'mark_marker') return String(args.label || '').slice(0, 30)
+  if (name === 'health_data_analysis') return String(args.query || '').slice(0, 50)
   return ''
 }
 
@@ -71,6 +73,11 @@ function metaForTool(name: string, args: Record<string, unknown>): string {
   if (name === 'mark_marker') return 'timeline marker'
   if (name === 'web_search') return 'live web · Exa'
   if (name === 'delegate_to_cursor') return 'composer-2 · async'
+  if (name === 'health_data_analysis') {
+    const metric = String(args.metric || 'summary')
+    const days = (args.days as number) ?? 7
+    return `${metric} · last ${days}d`
+  }
   return ''
 }
 
